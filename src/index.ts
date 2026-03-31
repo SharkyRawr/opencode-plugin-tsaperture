@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { homedir } from "os";
 import { join } from "path";
-import { access, readFile } from "fs/promises";
+import { readFile } from "fs/promises";
 import { platform } from "process";
 
 interface ApertureModel {
@@ -186,23 +186,19 @@ function getOpenCodeConfigDirs(): string[] {
   return dirs;
 }
 
+const openCodeConfigDirs = getOpenCodeConfigDirs();
+
 async function loadApertureConfig(): Promise<ApertureConfig> {
-  const configDirs = getOpenCodeConfigDirs();
-
-  for (const configDir of configDirs) {
+  for (const configDir of openCodeConfigDirs) {
     const configPath = join(configDir, "aperture.json");
-    try {
-      await access(configPath);
-    } catch {
-      continue;
-    }
-
     try {
       const content = await readFile(configPath, "utf-8");
       console.log(`[TailscaleAperture] Loaded config from ${configPath}`);
       return JSON.parse(content) as ApertureConfig;
     } catch (error) {
-      console.warn(`[TailscaleAperture] Failed to read ${configPath}:`, error);
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.warn(`[TailscaleAperture] Failed to read ${configPath}:`, error);
+      }
     }
   }
 
