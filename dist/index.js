@@ -1,7 +1,7 @@
 import { tool } from "@opencode-ai/plugin";
 import { homedir } from "os";
 import { join } from "path";
-import { readFileSync, existsSync } from "fs";
+import { access, readFile } from "fs/promises";
 import { platform } from "process";
 function normalizeBaseUrl(baseUrl) {
     return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
@@ -9,7 +9,19 @@ function normalizeBaseUrl(baseUrl) {
 function getModelDefaults(model) {
     const id = model.id.toLowerCase();
     const providerID = model.metadata?.provider?.id?.toLowerCase();
-    if (id.includes("glm") || providerID === "zai") {
+    const providerName = model.metadata?.provider?.name?.toLowerCase();
+    const isZai = id.includes("glm")
+        || providerID === "zai"
+        || providerID === "z.ai"
+        || providerID === "zai-coding-plan"
+        || providerName === "z.ai"
+        || providerName === "zai-coding-plan";
+    const isKimi = id.includes("kimi")
+        || providerID === "kimi"
+        || providerID === "kimi-for-coding"
+        || providerName === "kimi"
+        || providerName === "kimi-for-coding";
+    if (isZai) {
         return {
             limit: {
                 context: 200_000,
@@ -25,9 +37,15 @@ function getModelDefaults(model) {
             interleaved: {
                 field: "reasoning_content",
             },
+            options: {
+                thinking: {
+                    type: "enabled",
+                    clear_thinking: false,
+                },
+            },
         };
     }
-    if (id.includes("kimi")) {
+    if (isKimi) {
         return {
             limit: {
                 context: 200_000,
@@ -39,6 +57,18 @@ function getModelDefaults(model) {
             modalities: {
                 input: ["text"],
                 output: ["text"],
+            },
+            interleaved: {
+                field: "reasoning_content",
+            },
+            options: {
+                thinking: {
+                    type: "enabled",
+                    clear_thinking: false,
+                },
+            },
+            headers: {
+                "User-Agent": "KimiCLI/1.3",
             },
         };
     }
@@ -53,6 +83,15 @@ function getModelDefaults(model) {
         modalities: {
             input: ["text"],
             output: ["text"],
+        },
+        interleaved: {
+            field: "reasoning_content",
+        },
+        options: {
+            thinking: {
+                type: "enabled",
+                clear_thinking: false,
+            },
         },
     };
 }
@@ -87,25 +126,29 @@ function getOpenCodeConfigDirs() {
     }
     return dirs;
 }
-function loadApertureConfig() {
+async function loadApertureConfig() {
     const configDirs = getOpenCodeConfigDirs();
     for (const configDir of configDirs) {
         const configPath = join(configDir, "aperture.json");
-        if (existsSync(configPath)) {
-            try {
-                const content = readFileSync(configPath, "utf-8");
-                console.log(`[TailscaleAperture] Loaded config from ${configPath}`);
-                return JSON.parse(content);
-            }
-            catch (error) {
-                console.warn(`[TailscaleAperture] Failed to read ${configPath}:`, error);
-            }
+        try {
+            await access(configPath);
+        }
+        catch {
+            continue;
+        }
+        try {
+            const content = await readFile(configPath, "utf-8");
+            console.log(`[TailscaleAperture] Loaded config from ${configPath}`);
+            return JSON.parse(content);
+        }
+        catch (error) {
+            console.warn(`[TailscaleAperture] Failed to read ${configPath}:`, error);
         }
     }
     return {};
 }
 export const TailscaleAperturePlugin = async (_ctx, options) => {
-    const fileConfig = loadApertureConfig();
+    const fileConfig = await loadApertureConfig();
     const rawBaseUrl = options?.baseUrl || process.env.APERTURE_BASE_URL || fileConfig.baseUrl;
     const apiKey = options?.apiKey || process.env.APERTURE_API_KEY || fileConfig.apiKey || "";
     if (!rawBaseUrl) {
@@ -114,8 +157,17 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
     }
     const baseUrl = normalizeBaseUrl(rawBaseUrl);
     let discoveredModels = [];
-    try {
+    let modelsLoaded = false;
+    async function loadModels(refresh = false) {
+        if (!refresh && modelsLoaded) {
+            return discoveredModels;
+        }
         discoveredModels = await fetchApertureModels(baseUrl);
+        modelsLoaded = true;
+        return discoveredModels;
+    }
+    try {
+        discoveredModels = await loadModels(true);
         if (discoveredModels.length === 0) {
             console.warn("[TailscaleAperture] No models found");
         }
@@ -154,6 +206,35 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
                     config.provider.aperture.models[model.id] = {
                         ...defaults,
                         ...existingModel,
+                        limit: {
+                            ...defaults.limit,
+                            ...existingModel.limit,
+                        },
+                        modalities: {
+                            ...defaults.modalities,
+                            ...existingModel.modalities,
+                        },
+                        ...(defaults.interleaved || existingModel.interleaved ? {
+                            interleaved: existingModel.interleaved ?? defaults.interleaved,
+                        } : {}),
+                        ...(defaults.options || existingModel.options ? {
+                            options: {
+                                ...defaults.options,
+                                ...existingModel.options,
+                                ...(defaults.options?.thinking || existingModel.options?.thinking ? {
+                                    thinking: {
+                                        ...defaults.options?.thinking,
+                                        ...existingModel.options?.thinking,
+                                    },
+                                } : {}),
+                            },
+                        } : {}),
+                        ...(defaults.headers || existingModel.headers ? {
+                            headers: {
+                                ...defaults.headers,
+                                ...existingModel.headers,
+                            },
+                        } : {}),
                         id: model.id,
                         name: existingModel.name ?? model.id,
                     };
@@ -167,10 +248,12 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
         tool: {
             list_aperture_models: tool({
                 description: "List available models from Tailscale Aperture",
-                args: {},
-                async execute() {
+                args: {
+                    refresh: tool.schema.boolean().optional().describe("Refresh the cached Aperture model list before returning it"),
+                },
+                async execute(args) {
                     try {
-                        const models = await fetchApertureModels(baseUrl);
+                        const models = await loadModels(args.refresh ?? false);
                         return JSON.stringify({
                             models,
                             count: models.length,
@@ -185,10 +268,11 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
                 description: "Get details for a specific Aperture model",
                 args: {
                     modelId: tool.schema.string().describe("Model ID"),
+                    refresh: tool.schema.boolean().optional().describe("Refresh the cached Aperture model list before looking up the model"),
                 },
                 async execute(args) {
                     try {
-                        const models = await fetchApertureModels(baseUrl);
+                        const models = await loadModels(args.refresh ?? false);
                         const model = models.find(m => m.id === args.modelId);
                         if (!model) {
                             return JSON.stringify({ error: `Model ${args.modelId} not found` });
