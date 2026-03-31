@@ -1,4 +1,4 @@
-import type { Plugin } from "@opencode-ai/plugin";
+import type { Plugin, Config } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { homedir } from "os";
 import { join } from "path";
@@ -29,28 +29,31 @@ interface ApertureConfig {
   apiKey?: string;
 }
 
-type ModelConfig = {
-  id: string;
-  name: string;
-  limit: {
+type InterleavedConfig = true | {
+  field: "reasoning_content" | "reasoning_details";
+};
+
+type ApertureModelConfig = {
+  id?: string;
+  name?: string;
+  limit?: {
     context: number;
     output: number;
   };
-  reasoning: boolean;
-  temperature: boolean;
-  tool_call: boolean;
-  modalities: {
+  reasoning?: boolean;
+  temperature?: boolean;
+  tool_call?: boolean;
+  modalities?: {
     input: Array<"text">;
     output: Array<"text">;
   };
-  interleaved?: true | {
-    field: "reasoning_content" | "reasoning_details";
-  };
+  interleaved?: InterleavedConfig;
   options?: {
     thinking?: {
       type?: string;
       clear_thinking?: boolean;
     };
+    [key: string]: unknown;
   };
   headers?: Record<string, string>;
 };
@@ -59,7 +62,7 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
 }
 
-function getModelDefaults(model: ApertureModel): Omit<ModelConfig, "id" | "name"> {
+function getModelDefaults(model: ApertureModel): Omit<ApertureModelConfig, "id" | "name"> {
   const id = model.id.toLowerCase();
   const providerID = model.metadata?.provider?.id?.toLowerCase();
   const providerName = model.metadata?.provider?.name?.toLowerCase();
@@ -152,14 +155,20 @@ function getModelDefaults(model: ApertureModel): Omit<ModelConfig, "id" | "name"
   };
 }
 
-async function fetchApertureModels(baseUrl: string): Promise<ApertureModel[]> {
-  const response = await fetch(`${baseUrl}/v1/models`);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
-  }
+async function fetchApertureModels(baseUrl: string, timeoutMs = 15_000): Promise<ApertureModel[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${baseUrl}/v1/models`, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
+    }
 
-  const data = await response.json() as ApertureResponse;
-  return data.data || [];
+    const data = await response.json() as ApertureResponse;
+    return data.data || [];
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function getOpenCodeConfigDirs(): string[] {
@@ -241,7 +250,7 @@ export const TailscaleAperturePlugin: Plugin = async (_ctx, options) => {
   }
 
   return {
-    config: async (config: any) => {
+    config: async (config: Config) => {
       try {
         config.provider ??= {};
 
@@ -250,6 +259,9 @@ export const TailscaleAperturePlugin: Plugin = async (_ctx, options) => {
         }
 
         const existingProvider = config.provider.aperture ?? {};
+        const modelsObj: Record<string, ApertureModelConfig> = {
+          ...(existingProvider.models as Record<string, ApertureModelConfig> ?? {}),
+        };
         config.provider.aperture = {
           ...existingProvider,
           npm: existingProvider.npm ?? "@ai-sdk/openai-compatible",
@@ -259,24 +271,23 @@ export const TailscaleAperturePlugin: Plugin = async (_ctx, options) => {
             baseURL: `${baseUrl}/v1`,
             apiKey: existingProvider.options?.apiKey ?? apiKey,
           },
-          models: {
-            ...existingProvider.models,
-          },
+          models: modelsObj,
         };
 
-        // Add discovered models while preserving explicit user overrides.
         for (const model of discoveredModels) {
-          const existingModel = config.provider.aperture.models[model.id] ?? {};
+          const existingModel = modelsObj[model.id] ?? {};
           const defaults = getModelDefaults(model);
-          config.provider.aperture.models[model.id] = {
+          const thinkingDefaults = defaults.options?.thinking;
+          const thinkingExisting = existingModel.options?.thinking as { type?: string; clear_thinking?: boolean } | undefined;
+          modelsObj[model.id] = {
             ...defaults,
             ...existingModel,
             limit: {
-              ...defaults.limit,
+              ...defaults.limit!,
               ...existingModel.limit,
             },
             modalities: {
-              ...defaults.modalities,
+              ...defaults.modalities!,
               ...existingModel.modalities,
             },
             ...(defaults.interleaved || existingModel.interleaved ? {
@@ -286,10 +297,10 @@ export const TailscaleAperturePlugin: Plugin = async (_ctx, options) => {
               options: {
                 ...defaults.options,
                 ...existingModel.options,
-                ...(defaults.options?.thinking || existingModel.options?.thinking ? {
+                ...(thinkingDefaults || thinkingExisting ? {
                   thinking: {
-                    ...defaults.options?.thinking,
-                    ...existingModel.options?.thinking,
+                    ...thinkingDefaults,
+                    ...thinkingExisting,
                   },
                 } : {}),
               },
