@@ -95,13 +95,20 @@ function getModelDefaults(model) {
         },
     };
 }
-async function fetchApertureModels(baseUrl) {
-    const response = await fetch(`${baseUrl}/v1/models`);
-    if (!response.ok) {
-        throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
+async function fetchApertureModels(baseUrl, timeoutMs = 15_000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(`${baseUrl}/v1/models`, { signal: controller.signal });
+        if (!response.ok) {
+            throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
+        }
+        const data = await response.json();
+        return data.data || [];
     }
-    const data = await response.json();
-    return data.data || [];
+    finally {
+        clearTimeout(timer);
+    }
 }
 function getOpenCodeConfigDirs() {
     const home = homedir();
@@ -182,6 +189,9 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
                     return;
                 }
                 const existingProvider = config.provider.aperture ?? {};
+                const modelsObj = {
+                    ...(existingProvider.models ?? {}),
+                };
                 config.provider.aperture = {
                     ...existingProvider,
                     npm: existingProvider.npm ?? "@ai-sdk/openai-compatible",
@@ -191,15 +201,14 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
                         baseURL: `${baseUrl}/v1`,
                         apiKey: existingProvider.options?.apiKey ?? apiKey,
                     },
-                    models: {
-                        ...existingProvider.models,
-                    },
+                    models: modelsObj,
                 };
-                // Add discovered models while preserving explicit user overrides.
                 for (const model of discoveredModels) {
-                    const existingModel = config.provider.aperture.models[model.id] ?? {};
+                    const existingModel = modelsObj[model.id] ?? {};
                     const defaults = getModelDefaults(model);
-                    config.provider.aperture.models[model.id] = {
+                    const thinkingDefaults = defaults.options?.thinking;
+                    const thinkingExisting = existingModel.options?.thinking;
+                    modelsObj[model.id] = {
                         ...defaults,
                         ...existingModel,
                         limit: {
@@ -217,10 +226,10 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
                             options: {
                                 ...defaults.options,
                                 ...existingModel.options,
-                                ...(defaults.options?.thinking || existingModel.options?.thinking ? {
+                                ...(thinkingDefaults || thinkingExisting ? {
                                     thinking: {
-                                        ...defaults.options?.thinking,
-                                        ...existingModel.options?.thinking,
+                                        ...thinkingDefaults,
+                                        ...thinkingExisting,
                                     },
                                 } : {}),
                             },
