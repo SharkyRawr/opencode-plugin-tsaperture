@@ -1,3 +1,5 @@
+![NPM Version](https://img.shields.io/npm/v/opencode-plugin-tsaperture)
+
 # OpenCode Tailscale Aperture Plugin
 
 Automatically populate models from Tailscale Aperture.
