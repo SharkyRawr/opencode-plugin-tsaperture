@@ -224,6 +224,10 @@ export const TailscaleAperturePlugin: Plugin = async (_ctx, options) => {
     return {};
   }
 
+  if (!apiKey) {
+    console.info("[TailscaleAperture] No API key configured. This may be okay if you don't use authorization.");
+  }
+
   const baseUrl = normalizeBaseUrl(rawBaseUrl);
   let discoveredModels: ApertureModel[] = [];
   let modelsLoaded = false;

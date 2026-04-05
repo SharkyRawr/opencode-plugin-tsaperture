@@ -158,6 +158,9 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
         console.warn("[TailscaleAperture] No baseUrl configured. Set APERTURE_BASE_URL, add baseUrl to plugin options, or create aperture.json in opencode config directory.");
         return {};
     }
+    if (!apiKey) {
+        console.info("[TailscaleAperture] No API key configured. This may be okay if you don't use authorization.");
+    }
     const baseUrl = normalizeBaseUrl(rawBaseUrl);
     let discoveredModels = [];
     let modelsLoaded = false;
