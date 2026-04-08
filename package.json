@@ -1,6 +1,6 @@
 {
   "name": "opencode-plugin-tsaperture",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OpenCode plugin to automatically populate models from Tailscale Aperture API",
   "homepage": "https://github.com/SharkyRawr/opencode-plugin-tsaperture",
   "type": "module",

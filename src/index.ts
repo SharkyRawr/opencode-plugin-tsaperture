@@ -1,4 +1,4 @@
-import type { Plugin, Config, Hooks } from "@opencode-ai/plugin";
+import type { Plugin, Config } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { homedir } from "os";
 import { join } from "path";
@@ -68,13 +68,39 @@ type ThinkingConfig = {
   clear_thinking?: boolean;
 };
 
-type ProviderHook = NonNullable<Hooks["provider"]>;
-type ProviderModelsHook = NonNullable<ProviderHook["models"]>;
-type ProviderV2 = Parameters<ProviderModelsHook>[0];
-type ModelV2 = Awaited<ReturnType<ProviderModelsHook>>[string];
-
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+}
+
+type ApertureProviderGroup = {
+  id: string;
+  name: string;
+};
+
+function slugifyProviderSegment(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || "default";
+}
+
+function getProviderGroup(model: ApertureModel): ApertureProviderGroup {
+  const providerID = model.metadata?.provider?.id?.trim();
+  const providerName = model.metadata?.provider?.name?.trim();
+  if (!providerName) {
+    return {
+      id: "aperture",
+      name: "Aperture",
+    };
+  }
+
+  return {
+    id: `aperture-${slugifyProviderSegment(providerID || providerName)}`,
+    name: `Aperture/${providerName}`,
+  };
 }
 
 function getModelDefaults(model: ApertureModel): Omit<ApertureModelConfig, "id" | "name"> {
@@ -228,74 +254,6 @@ function mergeModelConfig(defaults: Omit<ApertureModelConfig, "id" | "name">, ex
   };
 }
 
-function toModelV2(
-  provider: ProviderV2,
-  sourceModel: ApertureModel,
-  existingModel?: ModelV2,
-): ModelV2 {
-  const mergedConfig = mergeModelConfig(getModelDefaults(sourceModel));
-
-  return {
-    id: sourceModel.id,
-    providerID: provider.id,
-    api: {
-      id: existingModel?.api.id ?? mergedConfig.id ?? sourceModel.id,
-      npm: existingModel?.api.npm ?? "@ai-sdk/openai-compatible",
-      url: existingModel?.api.url ?? String(provider.options?.baseURL ?? ""),
-    },
-    name: mergedConfig.name ?? existingModel?.name ?? sourceModel.id,
-    family: existingModel?.family ?? mergedConfig.family ?? "",
-    capabilities: {
-      temperature: mergedConfig.temperature ?? existingModel?.capabilities.temperature ?? false,
-      reasoning: mergedConfig.reasoning ?? existingModel?.capabilities.reasoning ?? false,
-      attachment: existingModel?.capabilities.attachment ?? false,
-      toolcall: mergedConfig.tool_call ?? existingModel?.capabilities.toolcall ?? true,
-      input: {
-        text: mergedConfig.modalities?.input?.includes("text") ?? existingModel?.capabilities.input.text ?? true,
-        audio: mergedConfig.modalities?.input?.includes("audio") ?? existingModel?.capabilities.input.audio ?? false,
-        image: mergedConfig.modalities?.input?.includes("image") ?? existingModel?.capabilities.input.image ?? false,
-        video: mergedConfig.modalities?.input?.includes("video") ?? existingModel?.capabilities.input.video ?? false,
-        pdf: mergedConfig.modalities?.input?.includes("pdf") ?? existingModel?.capabilities.input.pdf ?? false,
-      },
-      output: {
-        text: mergedConfig.modalities?.output?.includes("text") ?? existingModel?.capabilities.output.text ?? true,
-        audio: mergedConfig.modalities?.output?.includes("audio") ?? existingModel?.capabilities.output.audio ?? false,
-        image: mergedConfig.modalities?.output?.includes("image") ?? existingModel?.capabilities.output.image ?? false,
-        video: mergedConfig.modalities?.output?.includes("video") ?? existingModel?.capabilities.output.video ?? false,
-        pdf: mergedConfig.modalities?.output?.includes("pdf") ?? existingModel?.capabilities.output.pdf ?? false,
-      },
-      interleaved: mergedConfig.interleaved ?? existingModel?.capabilities.interleaved ?? false,
-    },
-    cost: {
-      input: existingModel?.cost.input ?? 0,
-      output: existingModel?.cost.output ?? 0,
-      cache: {
-        read: existingModel?.cost.cache.read ?? 0,
-        write: existingModel?.cost.cache.write ?? 0,
-      },
-      ...(existingModel?.cost.experimentalOver200K ? {
-        experimentalOver200K: existingModel.cost.experimentalOver200K,
-      } : {}),
-    },
-    limit: {
-      context: mergedConfig.limit?.context ?? existingModel?.limit.context ?? 0,
-      input: mergedConfig.limit?.input ?? existingModel?.limit.input,
-      output: mergedConfig.limit?.output ?? existingModel?.limit.output ?? 0,
-    },
-    status: existingModel?.status ?? mergedConfig.status ?? "active",
-    options: {
-      ...existingModel?.options,
-      ...mergedConfig.options,
-    },
-    headers: {
-      ...existingModel?.headers,
-      ...mergedConfig.headers,
-    },
-    release_date: existingModel?.release_date || mergedConfig.release_date || getDefaultReleaseDate(sourceModel.created),
-    variants: existingModel?.variants,
-  };
-}
-
 async function fetchApertureModels(baseUrl: string, apiKey: string, timeoutMs = 15_000): Promise<ApertureModel[]> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -408,47 +366,70 @@ export const TailscaleAperturePlugin: Plugin = async (_ctx, options) => {
           return;
         }
 
-        const existingProvider = config.provider.aperture ?? {};
-        const modelsObj: Record<string, ApertureModelConfig> = {
-          ...(existingProvider.models as Record<string, ApertureModelConfig> ?? {}),
-        };
-        config.provider.aperture = {
-          ...existingProvider,
-          npm: existingProvider.npm ?? "@ai-sdk/openai-compatible",
-          name: existingProvider.name ?? "Tailscale Aperture",
-          options: {
-            ...existingProvider.options,
-            baseURL: `${baseUrl}/v1`,
-            apiKey: existingProvider.options?.apiKey ?? apiKey,
-          },
-          models: modelsObj,
-        };
+        const baseProvider = config.provider.aperture ?? {};
+        const modelsByProvider = new Map<string, {
+          group: ApertureProviderGroup;
+          models: ApertureModel[];
+        }>();
 
         for (const model of discoveredModels) {
-          const existingModel = modelsObj[model.id] ?? {};
-          modelsObj[model.id] = {
-            ...mergeModelConfig(getModelDefaults(model), existingModel),
-            id: model.id,
-            name: existingModel.name ?? model.id,
-          };
+          const group = getProviderGroup(model);
+          const existingGroup = modelsByProvider.get(group.id);
+          if (existingGroup) {
+            existingGroup.models.push(model);
+          } else {
+            modelsByProvider.set(group.id, {
+              group,
+              models: [model],
+            });
+          }
         }
-        console.log(`[TailscaleAperture] Registered provider aperture for ${discoveredModels.length} discovered models`);
+
+        for (const { group, models } of modelsByProvider.values()) {
+          const existingProvider = config.provider[group.id] ?? {};
+          const modelsObj: Record<string, ApertureModelConfig> = {
+            ...(existingProvider.models as Record<string, ApertureModelConfig> ?? {}),
+          };
+
+          config.provider[group.id] = {
+            ...baseProvider,
+            ...existingProvider,
+            npm: existingProvider.npm ?? baseProvider.npm ?? "@ai-sdk/openai-compatible",
+            name: existingProvider.name ?? group.name,
+            options: {
+              ...baseProvider.options,
+              ...existingProvider.options,
+              baseURL: `${baseUrl}/v1`,
+              apiKey: existingProvider.options?.apiKey ?? baseProvider.options?.apiKey ?? apiKey,
+            },
+            models: modelsObj,
+          };
+
+          for (const model of models) {
+            const existingModel = modelsObj[model.id] ?? {};
+            modelsObj[model.id] = {
+              ...mergeModelConfig(getModelDefaults(model), existingModel),
+              id: model.id,
+              name: existingModel.name ?? model.id,
+            };
+          }
+        }
+
+        for (const providerID of Object.keys(config.provider)) {
+          if (providerID.startsWith("aperture-") && !modelsByProvider.has(providerID)) {
+            delete config.provider[providerID];
+          }
+        }
+
+        const defaultGroupOnly = modelsByProvider.size === 1 && modelsByProvider.has("aperture");
+        if (!defaultGroupOnly) {
+          delete config.provider.aperture;
+        }
+
+        console.log(`[TailscaleAperture] Registered ${modelsByProvider.size} Aperture provider groups for ${discoveredModels.length} discovered models`);
       } catch (error) {
         console.error("[TailscaleAperture] Failed to register models:", error);
       }
-    },
-
-    provider: {
-      id: "aperture",
-      models: async (provider: ProviderV2) => {
-        const nextModels = Object.fromEntries(discoveredModels.map((model) => {
-          const existingModel = provider.models[model.id];
-          return [model.id, toModelV2(provider, model, existingModel)];
-        }));
-
-        console.log(`[TailscaleAperture] Loaded ${Object.keys(nextModels).length} ModelV2 models`);
-        return nextModels;
-      },
     },
 
     tool: {
