@@ -95,11 +95,127 @@ function getModelDefaults(model) {
         },
     };
 }
-async function fetchApertureModels(baseUrl, timeoutMs = 15_000) {
+function getDefaultReleaseDate(created) {
+    if (!created || created <= 0) {
+        return "";
+    }
+    return new Date(created * 1000).toISOString().slice(0, 10);
+}
+function mergeThinkingConfig(defaults, existing) {
+    if (!defaults && !existing) {
+        return undefined;
+    }
+    return {
+        ...defaults,
+        ...existing,
+    };
+}
+function mergeModelConfig(defaults, existing = {}) {
+    const thinking = mergeThinkingConfig(defaults.options?.thinking, existing.options?.thinking);
+    const limit = defaults.limit || existing.limit ? {
+        context: existing.limit?.context ?? defaults.limit?.context ?? 0,
+        input: existing.limit?.input ?? defaults.limit?.input,
+        output: existing.limit?.output ?? defaults.limit?.output ?? 0,
+    } : undefined;
+    const modalities = defaults.modalities || existing.modalities ? {
+        input: existing.modalities?.input ?? defaults.modalities?.input ?? ["text"],
+        output: existing.modalities?.output ?? defaults.modalities?.output ?? ["text"],
+    } : undefined;
+    return {
+        ...defaults,
+        ...existing,
+        ...(limit ? { limit } : {}),
+        ...(modalities ? { modalities } : {}),
+        ...(defaults.interleaved || existing.interleaved ? {
+            interleaved: existing.interleaved ?? defaults.interleaved,
+        } : {}),
+        ...(defaults.options || existing.options ? {
+            options: {
+                ...defaults.options,
+                ...existing.options,
+                ...(thinking ? { thinking } : {}),
+            },
+        } : {}),
+        ...(defaults.headers || existing.headers ? {
+            headers: {
+                ...defaults.headers,
+                ...existing.headers,
+            },
+        } : {}),
+    };
+}
+function toModelV2(provider, sourceModel, existingModel) {
+    const mergedConfig = mergeModelConfig(getModelDefaults(sourceModel));
+    return {
+        id: sourceModel.id,
+        providerID: provider.id,
+        api: {
+            id: existingModel?.api.id ?? mergedConfig.id ?? sourceModel.id,
+            npm: existingModel?.api.npm ?? "@ai-sdk/openai-compatible",
+            url: existingModel?.api.url ?? String(provider.options?.baseURL ?? ""),
+        },
+        name: mergedConfig.name ?? existingModel?.name ?? sourceModel.id,
+        family: existingModel?.family ?? mergedConfig.family ?? "",
+        capabilities: {
+            temperature: mergedConfig.temperature ?? existingModel?.capabilities.temperature ?? false,
+            reasoning: mergedConfig.reasoning ?? existingModel?.capabilities.reasoning ?? false,
+            attachment: existingModel?.capabilities.attachment ?? false,
+            toolcall: mergedConfig.tool_call ?? existingModel?.capabilities.toolcall ?? true,
+            input: {
+                text: mergedConfig.modalities?.input?.includes("text") ?? existingModel?.capabilities.input.text ?? true,
+                audio: mergedConfig.modalities?.input?.includes("audio") ?? existingModel?.capabilities.input.audio ?? false,
+                image: mergedConfig.modalities?.input?.includes("image") ?? existingModel?.capabilities.input.image ?? false,
+                video: mergedConfig.modalities?.input?.includes("video") ?? existingModel?.capabilities.input.video ?? false,
+                pdf: mergedConfig.modalities?.input?.includes("pdf") ?? existingModel?.capabilities.input.pdf ?? false,
+            },
+            output: {
+                text: mergedConfig.modalities?.output?.includes("text") ?? existingModel?.capabilities.output.text ?? true,
+                audio: mergedConfig.modalities?.output?.includes("audio") ?? existingModel?.capabilities.output.audio ?? false,
+                image: mergedConfig.modalities?.output?.includes("image") ?? existingModel?.capabilities.output.image ?? false,
+                video: mergedConfig.modalities?.output?.includes("video") ?? existingModel?.capabilities.output.video ?? false,
+                pdf: mergedConfig.modalities?.output?.includes("pdf") ?? existingModel?.capabilities.output.pdf ?? false,
+            },
+            interleaved: mergedConfig.interleaved ?? existingModel?.capabilities.interleaved ?? false,
+        },
+        cost: {
+            input: existingModel?.cost.input ?? 0,
+            output: existingModel?.cost.output ?? 0,
+            cache: {
+                read: existingModel?.cost.cache.read ?? 0,
+                write: existingModel?.cost.cache.write ?? 0,
+            },
+            ...(existingModel?.cost.experimentalOver200K ? {
+                experimentalOver200K: existingModel.cost.experimentalOver200K,
+            } : {}),
+        },
+        limit: {
+            context: mergedConfig.limit?.context ?? existingModel?.limit.context ?? 0,
+            input: mergedConfig.limit?.input ?? existingModel?.limit.input,
+            output: mergedConfig.limit?.output ?? existingModel?.limit.output ?? 0,
+        },
+        status: existingModel?.status ?? mergedConfig.status ?? "active",
+        options: {
+            ...existingModel?.options,
+            ...mergedConfig.options,
+        },
+        headers: {
+            ...existingModel?.headers,
+            ...mergedConfig.headers,
+        },
+        release_date: existingModel?.release_date || mergedConfig.release_date || getDefaultReleaseDate(sourceModel.created),
+        variants: existingModel?.variants,
+    };
+}
+async function fetchApertureModels(baseUrl, apiKey, timeoutMs = 15_000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const response = await fetch(`${baseUrl}/v1/models`, { signal: controller.signal });
+        const response = await fetch(`${baseUrl}/v1/models`, {
+            signal: controller.signal,
+            headers: apiKey ? {
+                Authorization: `Bearer ${apiKey}`,
+            } : undefined,
+        });
         if (!response.ok) {
             throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
         }
@@ -168,7 +284,7 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
         if (!refresh && modelsLoaded) {
             return discoveredModels;
         }
-        discoveredModels = await fetchApertureModels(baseUrl);
+        discoveredModels = await fetchApertureModels(baseUrl, apiKey);
         modelsLoaded = true;
         return discoveredModels;
     }
@@ -208,50 +324,28 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
                 };
                 for (const model of discoveredModels) {
                     const existingModel = modelsObj[model.id] ?? {};
-                    const defaults = getModelDefaults(model);
-                    const thinkingDefaults = defaults.options?.thinking;
-                    const thinkingExisting = existingModel.options?.thinking;
                     modelsObj[model.id] = {
-                        ...defaults,
-                        ...existingModel,
-                        limit: {
-                            ...defaults.limit,
-                            ...existingModel.limit,
-                        },
-                        modalities: {
-                            ...defaults.modalities,
-                            ...existingModel.modalities,
-                        },
-                        ...(defaults.interleaved || existingModel.interleaved ? {
-                            interleaved: existingModel.interleaved ?? defaults.interleaved,
-                        } : {}),
-                        ...(defaults.options || existingModel.options ? {
-                            options: {
-                                ...defaults.options,
-                                ...existingModel.options,
-                                ...(thinkingDefaults || thinkingExisting ? {
-                                    thinking: {
-                                        ...thinkingDefaults,
-                                        ...thinkingExisting,
-                                    },
-                                } : {}),
-                            },
-                        } : {}),
-                        ...(defaults.headers || existingModel.headers ? {
-                            headers: {
-                                ...defaults.headers,
-                                ...existingModel.headers,
-                            },
-                        } : {}),
+                        ...mergeModelConfig(getModelDefaults(model), existingModel),
                         id: model.id,
                         name: existingModel.name ?? model.id,
                     };
                 }
-                console.log(`[TailscaleAperture] Registered ${discoveredModels.length} models`);
+                console.log(`[TailscaleAperture] Registered provider aperture for ${discoveredModels.length} discovered models`);
             }
             catch (error) {
                 console.error("[TailscaleAperture] Failed to register models:", error);
             }
+        },
+        provider: {
+            id: "aperture",
+            models: async (provider) => {
+                const nextModels = Object.fromEntries(discoveredModels.map((model) => {
+                    const existingModel = provider.models[model.id];
+                    return [model.id, toModelV2(provider, model, existingModel)];
+                }));
+                console.log(`[TailscaleAperture] Loaded ${Object.keys(nextModels).length} ModelV2 models`);
+                return nextModels;
+            },
         },
         tool: {
             list_aperture_models: tool({
