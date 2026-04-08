@@ -166,6 +166,41 @@ function mergeModelConfig(defaults, existing = {}) {
         } : {}),
     };
 }
+/**
+ * Poll the models endpoint until the set of model IDs stabilizes (two
+ * consecutive fetches return the same IDs) or the deadline is exceeded.
+ * Transient fetch errors are retried within the deadline.
+ */
+async function waitForStableModels(baseUrl, apiKey, { pollIntervalMs = 500, deadlineMs = 10_000, minFetchTimeoutMs = 2_000, previousModels = [] } = {}) {
+    const deadline = Date.now() + deadlineMs;
+    let previousIds = previousModels.length > 0
+        ? previousModels.map((m) => m.id).sort().join("\n")
+        : undefined;
+    let lastGoodResult = previousModels;
+    while (Date.now() < deadline) {
+        const remaining = deadline - Date.now();
+        if (remaining < minFetchTimeoutMs && lastGoodResult.length > 0) {
+            return lastGoodResult;
+        }
+        try {
+            const models = await fetchApertureModels(baseUrl, apiKey, Math.max(remaining, minFetchTimeoutMs));
+            const ids = models.map((m) => m.id).sort().join("\n");
+            lastGoodResult = models;
+            if (ids === previousIds) {
+                return models;
+            }
+            previousIds = ids;
+        }
+        catch {
+            // Transient error — retry until deadline.
+        }
+        if (Date.now() + pollIntervalMs >= deadline) {
+            return lastGoodResult;
+        }
+        await new Promise((r) => setTimeout(r, pollIntervalMs));
+    }
+    return lastGoodResult;
+}
 async function fetchApertureModels(baseUrl, apiKey, timeoutMs = 15_000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -244,7 +279,14 @@ export const TailscaleAperturePlugin = async (_ctx, options) => {
         if (!refresh && modelsLoaded) {
             return discoveredModels;
         }
-        discoveredModels = await fetchApertureModels(baseUrl, apiKey);
+        if (refresh && modelsLoaded) {
+            // Interactive refresh: single fetch, no stabilization wait.
+            discoveredModels = await fetchApertureModels(baseUrl, apiKey);
+            return discoveredModels;
+        }
+        discoveredModels = await waitForStableModels(baseUrl, apiKey, {
+            previousModels: discoveredModels,
+        });
         modelsLoaded = true;
         return discoveredModels;
     }

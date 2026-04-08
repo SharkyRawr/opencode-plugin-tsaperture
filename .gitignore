@@ -1,5 +1,4 @@
 node_modules/
-dist/
 *.log
 .env
 .env.local
@@ -11,3 +10,5 @@ coverage/
 *.swp
 *.swo
 *~
+/memory/
+/.claude/
