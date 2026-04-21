@@ -363,16 +363,24 @@ function getOpenCodeConfigDirs(): string[] {
 
 const openCodeConfigDirs = getOpenCodeConfigDirs();
 
-async function loadApertureConfig(): Promise<ApertureConfig> {
+type Logger = {
+  log: (message: string, ...args: unknown[]) => void;
+  warn: (message: string, ...args: unknown[]) => void;
+  error: (message: string, ...args: unknown[]) => void;
+  info: (message: string, ...args: unknown[]) => void;
+  debug: (message: string, ...args: unknown[]) => void;
+};
+
+async function loadApertureConfig(logger: Logger): Promise<ApertureConfig> {
   for (const configDir of openCodeConfigDirs) {
     const configPath = join(configDir, "aperture.json");
     try {
       const content = await readFile(configPath, "utf-8");
-      console.log(`[TailscaleAperture] Loaded config from ${configPath}`);
+      logger.log(`[TailscaleAperture] Loaded config from ${configPath}`);
       return JSON.parse(content) as ApertureConfig;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.warn(`[TailscaleAperture] Failed to read ${configPath}:`, error);
+        logger.warn(`[TailscaleAperture] Failed to read ${configPath}:`, error);
       }
     }
   }
@@ -380,18 +388,73 @@ async function loadApertureConfig(): Promise<ApertureConfig> {
   return {};
 }
 
-export const TailscaleAperturePlugin: Plugin = async (_ctx, options) => {
-  const fileConfig = await loadApertureConfig();
+export const TailscaleAperturePlugin: Plugin = async (input, options) => {
+  const client = input.client;
+
+  const logger: Logger = {
+    log: (message: string, ...args: unknown[]) => {
+      client.app.log({
+        body: {
+          service: "TailscaleAperture",
+          level: "info",
+          message,
+          extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
+        },
+      }).catch(() => {});
+    },
+    warn: (message: string, ...args: unknown[]) => {
+      client.app.log({
+        body: {
+          service: "TailscaleAperture",
+          level: "warn",
+          message,
+          extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
+        },
+      }).catch(() => {});
+    },
+    error: (message: string, ...args: unknown[]) => {
+      client.app.log({
+        body: {
+          service: "TailscaleAperture",
+          level: "error",
+          message,
+          extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
+        },
+      }).catch(() => {});
+    },
+    info: (message: string, ...args: unknown[]) => {
+      client.app.log({
+        body: {
+          service: "TailscaleAperture",
+          level: "info",
+          message,
+          extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
+        },
+      }).catch(() => {});
+    },
+    debug: (message: string, ...args: unknown[]) => {
+      client.app.log({
+        body: {
+          service: "TailscaleAperture",
+          level: "debug",
+          message,
+          extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
+        },
+      }).catch(() => {});
+    },
+  };
+
+  const fileConfig = await loadApertureConfig(logger);
   const rawBaseUrl = (options?.baseUrl as string) || process.env.APERTURE_BASE_URL || fileConfig.baseUrl;
   const apiKey = (options?.apiKey as string) || process.env.APERTURE_API_KEY || fileConfig.apiKey || "";
 
   if (!rawBaseUrl) {
-    console.warn("[TailscaleAperture] No baseUrl configured. Set APERTURE_BASE_URL, add baseUrl to plugin options, or create aperture.json in opencode config directory.");
+    logger.warn("[TailscaleAperture] No baseUrl configured. Set APERTURE_BASE_URL, add baseUrl to plugin options, or create aperture.json in opencode config directory.");
     return {};
   }
 
   if (!apiKey) {
-    console.info("[TailscaleAperture] No API key configured. This may be okay if you don't use authorization.");
+    logger.info("[TailscaleAperture] No API key configured. This may be okay if you don't use authorization.");
   }
 
   const baseUrl = normalizeBaseUrl(rawBaseUrl);
@@ -419,12 +482,12 @@ export const TailscaleAperturePlugin: Plugin = async (_ctx, options) => {
   try {
     discoveredModels = await loadModels(true);
     if (discoveredModels.length === 0) {
-      console.warn("[TailscaleAperture] No models found");
+      logger.warn("[TailscaleAperture] No models found");
     } else {
-      console.log(`[TailscaleAperture] Discovered ${discoveredModels.length} models from ${baseUrl}`);
+      logger.log(`[TailscaleAperture] Discovered ${discoveredModels.length} models from ${baseUrl}`);
     }
   } catch (error) {
-    console.warn("[TailscaleAperture] Failed to preload models:", error);
+    logger.warn("[TailscaleAperture] Failed to preload models:", error);
   }
 
   return {
@@ -496,9 +559,9 @@ export const TailscaleAperturePlugin: Plugin = async (_ctx, options) => {
           delete config.provider.aperture;
         }
 
-        console.log(`[TailscaleAperture] Registered ${modelsByProvider.size} Aperture provider groups for ${discoveredModels.length} discovered models`);
+        logger.log(`[TailscaleAperture] Registered ${modelsByProvider.size} Aperture provider groups for ${discoveredModels.length} discovered models`);
       } catch (error) {
-        console.error("[TailscaleAperture] Failed to register models:", error);
+        logger.error("[TailscaleAperture] Failed to register models:", error);
       }
     },
 
