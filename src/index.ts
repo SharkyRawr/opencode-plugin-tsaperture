@@ -60,7 +60,6 @@ type ApertureModelConfig = {
   options?: {
     thinking?: {
       type?: string;
-      clear_thinking?: boolean;
     };
     [key: string]: unknown;
   };
@@ -69,7 +68,6 @@ type ApertureModelConfig = {
 
 type ThinkingConfig = {
   type?: string;
-  clear_thinking?: boolean;
 };
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -142,7 +140,6 @@ function getModelDefaults(model: ApertureModel): Omit<ApertureModelConfig, "id" 
       options: {
         thinking: {
           type: "enabled",
-          clear_thinking: false,
         },
       },
     };
@@ -167,7 +164,6 @@ function getModelDefaults(model: ApertureModel): Omit<ApertureModelConfig, "id" 
       options: {
         thinking: {
           type: "enabled",
-          clear_thinking: false,
         },
       },
       headers: {
@@ -194,7 +190,6 @@ function getModelDefaults(model: ApertureModel): Omit<ApertureModelConfig, "id" 
     options: {
       thinking: {
         type: "enabled",
-        clear_thinking: false,
       },
     },
   };

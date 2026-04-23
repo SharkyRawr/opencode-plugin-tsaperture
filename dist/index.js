@@ -63,7 +63,6 @@ function getModelDefaults(model) {
             options: {
                 thinking: {
                     type: "enabled",
-                    clear_thinking: false,
                 },
             },
         };
@@ -87,7 +86,6 @@ function getModelDefaults(model) {
             options: {
                 thinking: {
                     type: "enabled",
-                    clear_thinking: false,
                 },
             },
             headers: {
@@ -113,7 +111,6 @@ function getModelDefaults(model) {
         options: {
             thinking: {
                 type: "enabled",
-                clear_thinking: false,
             },
         },
     };
