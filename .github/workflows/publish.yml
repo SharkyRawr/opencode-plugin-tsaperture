@@ -14,6 +14,7 @@ jobs:
   publish:
     name: Publish package
     runs-on: ubuntu-latest
+    environment: npmjs
 
     steps:
       - name: Checkout repository
