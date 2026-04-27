@@ -172,27 +172,31 @@ function mergeModelConfig(defaults, existing = {}) {
  * consecutive fetches return the same IDs) or the deadline is exceeded.
  * Transient fetch errors are retried within the deadline.
  */
-async function waitForStableModels(baseUrl, apiKey, { pollIntervalMs = 500, deadlineMs = 10_000, minFetchTimeoutMs = 2_000, previousModels = [] } = {}) {
+async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = 500, deadlineMs = 10_000, fetchTimeoutMs = 5_000, minFetchTimeoutMs = 2_000, previousModels = [] } = {}) {
     const deadline = Date.now() + deadlineMs;
     let previousIds = previousModels.length > 0
         ? previousModels.map(getModelProviderKey).sort().join("\n")
         : undefined;
     let lastGoodResult = previousModels;
+    let sawSuccessfulFetch = previousModels.length > 0;
+    let lastError;
     while (Date.now() < deadline) {
         const remaining = deadline - Date.now();
         if (remaining < minFetchTimeoutMs && lastGoodResult.length > 0) {
             return lastGoodResult;
         }
         try {
-            const models = await fetchApertureModels(baseUrl, apiKey, Math.max(remaining, minFetchTimeoutMs));
+            const models = await fetchApertureModels(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
             const ids = models.map(getModelProviderKey).sort().join("\n");
             lastGoodResult = models;
+            sawSuccessfulFetch = true;
             if (ids === previousIds) {
                 return models;
             }
             previousIds = ids;
         }
-        catch {
+        catch (error) {
+            lastError = error;
             // Transient error — retry until deadline.
         }
         if (Date.now() + pollIntervalMs >= deadline) {
@@ -200,19 +204,24 @@ async function waitForStableModels(baseUrl, apiKey, { pollIntervalMs = 500, dead
         }
         await new Promise((r) => setTimeout(r, pollIntervalMs));
     }
+    if (!sawSuccessfulFetch && lastError) {
+        throw lastError;
+    }
     return lastGoodResult;
 }
-async function fetchApertureModels(baseUrl, apiKey, timeoutMs = 15_000) {
+async function fetchApertureModels(baseUrl, apiKey, logger, timeoutMs = 15_000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const url = `${baseUrl}/v1/models`;
     try {
-        const response = await fetch(`${baseUrl}/v1/models`, {
+        const response = await fetch(url, {
             signal: controller.signal,
             headers: apiKey ? {
                 Authorization: `Bearer ${apiKey}`,
             } : undefined,
         });
         if (!response.ok) {
+            logger.warn(`[TailscaleAperture] Aperture API request failed: GET /v1/models ${response.status} ${response.statusText}`);
             throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
         }
         const data = await response.json();
@@ -227,6 +236,12 @@ async function fetchApertureModels(baseUrl, apiKey, timeoutMs = 15_000) {
         const mergedModels = [...openAIModels, ...llamaCppModels]
             .filter((model) => model.id);
         return Array.from(new Map(mergedModels.map((model) => [getModelProviderKey(model), model])).values());
+    }
+    catch (error) {
+        if (!(error instanceof Error && error.message.startsWith("Failed to fetch models:"))) {
+            logger.warn("[TailscaleAperture] Aperture API request failed: GET /v1/models", error);
+        }
+        throw error;
     }
     finally {
         clearTimeout(timer);
@@ -348,10 +363,10 @@ export const TailscaleAperturePlugin = async (input, options) => {
         }
         if (refresh && modelsLoaded) {
             // Interactive refresh: single fetch, no stabilization wait.
-            discoveredModels = await fetchApertureModels(baseUrl, apiKey);
+            discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger);
             return discoveredModels;
         }
-        discoveredModels = await waitForStableModels(baseUrl, apiKey, {
+        discoveredModels = await waitForStableModels(baseUrl, apiKey, logger, {
             previousModels: discoveredModels,
         });
         modelsLoaded = true;

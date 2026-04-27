@@ -265,13 +265,16 @@ function mergeModelConfig(defaults: Omit<ApertureModelConfig, "id" | "name">, ex
 async function waitForStableModels(
   baseUrl: string,
   apiKey: string,
-  { pollIntervalMs = 500, deadlineMs = 10_000, minFetchTimeoutMs = 2_000, previousModels = [] as ApertureModel[] } = {},
+  logger: Logger,
+  { pollIntervalMs = 500, deadlineMs = 10_000, fetchTimeoutMs = 5_000, minFetchTimeoutMs = 2_000, previousModels = [] as ApertureModel[] } = {},
 ): Promise<ApertureModel[]> {
   const deadline = Date.now() + deadlineMs;
   let previousIds: string | undefined = previousModels.length > 0
     ? previousModels.map(getModelProviderKey).sort().join("\n")
     : undefined;
   let lastGoodResult: ApertureModel[] = previousModels;
+  let sawSuccessfulFetch = previousModels.length > 0;
+  let lastError: unknown;
 
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
@@ -280,16 +283,18 @@ async function waitForStableModels(
     }
 
     try {
-      const models = await fetchApertureModels(baseUrl, apiKey, Math.max(remaining, minFetchTimeoutMs));
+      const models = await fetchApertureModels(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
       const ids = models.map(getModelProviderKey).sort().join("\n");
 
       lastGoodResult = models;
+      sawSuccessfulFetch = true;
 
       if (ids === previousIds) {
         return models;
       }
       previousIds = ids;
-    } catch {
+    } catch (error) {
+      lastError = error;
       // Transient error — retry until deadline.
     }
 
@@ -300,20 +305,26 @@ async function waitForStableModels(
     await new Promise((r) => setTimeout(r, pollIntervalMs));
   }
 
+  if (!sawSuccessfulFetch && lastError) {
+    throw lastError;
+  }
+
   return lastGoodResult;
 }
 
-async function fetchApertureModels(baseUrl: string, apiKey: string, timeoutMs = 15_000): Promise<ApertureModel[]> {
+async function fetchApertureModels(baseUrl: string, apiKey: string, logger: Logger, timeoutMs = 15_000): Promise<ApertureModel[]> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const url = `${baseUrl}/v1/models`;
   try {
-    const response = await fetch(`${baseUrl}/v1/models`, {
+    const response = await fetch(url, {
       signal: controller.signal,
       headers: apiKey ? {
         Authorization: `Bearer ${apiKey}`,
       } : undefined,
     });
     if (!response.ok) {
+      logger.warn(`[TailscaleAperture] Aperture API request failed: GET /v1/models ${response.status} ${response.statusText}`);
       throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
     }
 
@@ -332,6 +343,11 @@ async function fetchApertureModels(baseUrl: string, apiKey: string, timeoutMs = 
     return Array.from(
       new Map(mergedModels.map((model) => [getModelProviderKey(model), model])).values(),
     );
+  } catch (error) {
+    if (!(error instanceof Error && error.message.startsWith("Failed to fetch models:"))) {
+      logger.warn("[TailscaleAperture] Aperture API request failed: GET /v1/models", error);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -472,11 +488,11 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
 
     if (refresh && modelsLoaded) {
       // Interactive refresh: single fetch, no stabilization wait.
-      discoveredModels = await fetchApertureModels(baseUrl, apiKey);
+      discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger);
       return discoveredModels;
     }
 
-    discoveredModels = await waitForStableModels(baseUrl, apiKey, {
+    discoveredModels = await waitForStableModels(baseUrl, apiKey, logger, {
       previousModels: discoveredModels,
     });
     modelsLoaded = true;
