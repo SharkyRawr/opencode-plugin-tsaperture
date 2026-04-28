@@ -357,6 +357,66 @@ export const TailscaleAperturePlugin = async (input, options) => {
     const baseUrl = normalizeBaseUrl(rawBaseUrl);
     let discoveredModels = [];
     let modelsLoaded = false;
+    let modelLoadPromise;
+    function formatError(error) {
+        return error instanceof Error ? error.message : String(error);
+    }
+    function showMessage(variant, message) {
+        client.tui.showToast({
+            body: {
+                title: "Tailscale Aperture",
+                message,
+                variant,
+                duration: 10_000,
+            },
+            query: {
+                directory: input.directory,
+            },
+        }).catch((error) => {
+            logger.warn("[TailscaleAperture] Failed to show opencode message:", error);
+        });
+    }
+    async function printErrorToChat(message) {
+        try {
+            const sessionsResult = await client.session.list({
+                query: {
+                    directory: input.directory,
+                },
+            });
+            if (sessionsResult.error) {
+                throw new Error(`Failed to list opencode sessions: ${JSON.stringify(sessionsResult.error)}`);
+            }
+            const session = sessionsResult.data
+                ?.filter((candidate) => candidate.directory === input.directory)
+                .sort((a, b) => b.time.updated - a.time.updated)[0];
+            if (!session) {
+                logger.warn("[TailscaleAperture] Failed to print error to chat: no opencode session found");
+                return;
+            }
+            const promptResult = await client.session.promptAsync({
+                path: {
+                    id: session.id,
+                },
+                query: {
+                    directory: input.directory,
+                },
+                body: {
+                    noReply: true,
+                    parts: [{
+                            type: "text",
+                            text: message,
+                            synthetic: true,
+                        }],
+                },
+            });
+            if (promptResult.error) {
+                throw new Error(`Failed to print error to chat: ${JSON.stringify(promptResult.error)}`);
+            }
+        }
+        catch (error) {
+            logger.warn("[TailscaleAperture] Failed to print error to chat:", error);
+        }
+    }
     async function loadModels(refresh = false) {
         if (!refresh && modelsLoaded) {
             return discoveredModels;
@@ -366,83 +426,109 @@ export const TailscaleAperturePlugin = async (input, options) => {
             discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger);
             return discoveredModels;
         }
-        discoveredModels = await waitForStableModels(baseUrl, apiKey, logger, {
+        if (!refresh && modelLoadPromise) {
+            return modelLoadPromise;
+        }
+        modelLoadPromise = waitForStableModels(baseUrl, apiKey, logger, {
             previousModels: discoveredModels,
+        }).then((models) => {
+            discoveredModels = models;
+            modelsLoaded = true;
+            return discoveredModels;
+        }).finally(() => {
+            modelLoadPromise = undefined;
         });
-        modelsLoaded = true;
-        return discoveredModels;
+        return modelLoadPromise;
     }
-    try {
-        discoveredModels = await loadModels(true);
+    function mutateConfig(config) {
+        config.provider ??= {};
         if (discoveredModels.length === 0) {
-            logger.warn("[TailscaleAperture] No models found");
+            return 0;
         }
-        else {
+        const baseProvider = config.provider.aperture ?? {};
+        const modelsByProvider = new Map();
+        for (const model of discoveredModels) {
+            const group = getProviderGroup(model);
+            const existingGroup = modelsByProvider.get(group.id);
+            if (existingGroup) {
+                existingGroup.models.push(model);
+            }
+            else {
+                modelsByProvider.set(group.id, {
+                    group,
+                    models: [model],
+                });
+            }
+        }
+        for (const { group, models } of modelsByProvider.values()) {
+            const existingProvider = config.provider[group.id] ?? {};
+            const modelsObj = {
+                ...(existingProvider.models ?? {}),
+            };
+            config.provider[group.id] = {
+                ...baseProvider,
+                ...existingProvider,
+                npm: existingProvider.npm ?? baseProvider.npm ?? "@ai-sdk/openai-compatible",
+                name: existingProvider.name ?? group.name,
+                options: {
+                    ...baseProvider.options,
+                    ...existingProvider.options,
+                    baseURL: `${baseUrl}/v1`,
+                    apiKey: existingProvider.options?.apiKey ?? baseProvider.options?.apiKey ?? apiKey,
+                },
+                models: modelsObj,
+            };
+            for (const model of models) {
+                const existingModel = modelsObj[model.id] ?? {};
+                modelsObj[model.id] = {
+                    ...mergeModelConfig(getModelDefaults(model), existingModel),
+                    id: model.id,
+                    name: existingModel.name ?? model.id,
+                };
+            }
+        }
+        for (const providerID of Object.keys(config.provider)) {
+            if (providerID.startsWith("aperture-") && !modelsByProvider.has(providerID)) {
+                delete config.provider[providerID];
+            }
+        }
+        const hasDefaultGroup = modelsByProvider.has("aperture");
+        if (!hasDefaultGroup) {
+            delete config.provider.aperture;
+        }
+        return modelsByProvider.size;
+    }
+    function countProviderGroups(models) {
+        return new Set(models.map((model) => getProviderGroup(model).id)).size;
+    }
+    async function loadModelsOnStartup() {
+        try {
+            discoveredModels = await loadModels(false);
+            if (discoveredModels.length === 0) {
+                logger.warn("[TailscaleAperture] No models found");
+                showMessage("success", `No Aperture models found at ${baseUrl}`);
+                return discoveredModels;
+            }
             logger.log(`[TailscaleAperture] Discovered ${discoveredModels.length} models from ${baseUrl}`);
+            const providerGroupCount = countProviderGroups(discoveredModels);
+            logger.log(`[TailscaleAperture] Registered ${providerGroupCount} Aperture provider groups for ${discoveredModels.length} discovered models`);
+            showMessage("success", `Registered ${discoveredModels.length} Aperture models across ${providerGroupCount} provider groups`);
+            return discoveredModels;
+        }
+        catch (error) {
+            const errmsg = formatError(error);
+            logger.error("[TailscaleAperture] Failed to register models:", error);
+            showMessage("error", errmsg);
+            await printErrorToChat(errmsg);
+            throw error;
         }
     }
-    catch (error) {
-        logger.warn("[TailscaleAperture] Failed to preload models:", error);
-    }
+    const startupModels = loadModelsOnStartup();
     return {
         config: async (config) => {
             try {
-                config.provider ??= {};
-                if (discoveredModels.length === 0) {
-                    return;
-                }
-                const baseProvider = config.provider.aperture ?? {};
-                const modelsByProvider = new Map();
-                for (const model of discoveredModels) {
-                    const group = getProviderGroup(model);
-                    const existingGroup = modelsByProvider.get(group.id);
-                    if (existingGroup) {
-                        existingGroup.models.push(model);
-                    }
-                    else {
-                        modelsByProvider.set(group.id, {
-                            group,
-                            models: [model],
-                        });
-                    }
-                }
-                for (const { group, models } of modelsByProvider.values()) {
-                    const existingProvider = config.provider[group.id] ?? {};
-                    const modelsObj = {
-                        ...(existingProvider.models ?? {}),
-                    };
-                    config.provider[group.id] = {
-                        ...baseProvider,
-                        ...existingProvider,
-                        npm: existingProvider.npm ?? baseProvider.npm ?? "@ai-sdk/openai-compatible",
-                        name: existingProvider.name ?? group.name,
-                        options: {
-                            ...baseProvider.options,
-                            ...existingProvider.options,
-                            baseURL: `${baseUrl}/v1`,
-                            apiKey: existingProvider.options?.apiKey ?? baseProvider.options?.apiKey ?? apiKey,
-                        },
-                        models: modelsObj,
-                    };
-                    for (const model of models) {
-                        const existingModel = modelsObj[model.id] ?? {};
-                        modelsObj[model.id] = {
-                            ...mergeModelConfig(getModelDefaults(model), existingModel),
-                            id: model.id,
-                            name: existingModel.name ?? model.id,
-                        };
-                    }
-                }
-                for (const providerID of Object.keys(config.provider)) {
-                    if (providerID.startsWith("aperture-") && !modelsByProvider.has(providerID)) {
-                        delete config.provider[providerID];
-                    }
-                }
-                const hasDefaultGroup = modelsByProvider.has("aperture");
-                if (!hasDefaultGroup) {
-                    delete config.provider.aperture;
-                }
-                logger.log(`[TailscaleAperture] Registered ${modelsByProvider.size} Aperture provider groups for ${discoveredModels.length} discovered models`);
+                await startupModels;
+                mutateConfig(config);
             }
             catch (error) {
                 logger.error("[TailscaleAperture] Failed to register models:", error);
