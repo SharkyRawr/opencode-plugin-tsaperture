@@ -53,6 +53,22 @@ Contents:
 
 `apiKey` is optional. Set it when your Aperture endpoint requires bearer auth. If omitted, the plugin passes an empty key to the OpenAI-compatible provider.
 
+### Models.dev enrichment
+
+The plugin enriches Aperture's `/v1/models` response with the same Models.dev catalog OpenCode uses. When a discovered model matches a catalog provider/model ID, the generated OpenCode config includes the catalog's family, release date, cost, modalities, reasoning/tool/temperature support, interleaved reasoning field, variants, and accurate `limit.context`, `limit.input`, and `limit.output` values.
+
+Optional `aperture.json` fields:
+
+```json
+{
+  "modelsDevUrl": "https://models.dev",
+  "modelsDevPath": "/path/to/models-dev-api.json",
+  "disableModelsDev": false
+}
+```
+
+The plugin also honors OpenCode's `OPENCODE_MODELS_URL`, `OPENCODE_MODELS_PATH`, and `OPENCODE_DISABLE_MODELS_FETCH` environment variables.
+
 ## Usage
 
 Once configured, models will be available via the plugin tools:
