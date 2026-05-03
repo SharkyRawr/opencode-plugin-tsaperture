@@ -138,6 +138,10 @@ type ApertureProviderGroup = {
   name: string;
 };
 
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  deepseek: "DeepSeek",
+};
+
 function slugifyProviderSegment(value: string): string {
   const normalized = value
     .trim()
@@ -146,6 +150,23 @@ function slugifyProviderSegment(value: string): string {
     .replace(/^-+|-+$/g, "");
 
   return normalized || "default";
+}
+
+function getProviderDisplayName(providerID: string): string {
+  const slug = slugifyProviderSegment(providerID);
+  return PROVIDER_DISPLAY_NAMES[slug]
+    ?? providerID.trim()
+    ?? slug;
+}
+
+function inferProviderIDFromModel(model: ApertureModel): string | undefined {
+  const id = model.id.toLowerCase();
+
+  if (id.startsWith("deepseek-")) {
+    return "deepseek";
+  }
+
+  return undefined;
 }
 
 function normalizeModelLookup(value: string): string {
@@ -229,7 +250,10 @@ function findModelsDevEntry(model: ApertureModel, catalog?: ModelsDevCatalog): {
 function getProviderGroup(model: ApertureModel): ApertureProviderGroup {
   const providerID = model.metadata?.provider?.id?.trim();
   const providerName = model.metadata?.provider?.name?.trim();
-  if (!providerName) {
+  const inferredProviderID = providerID || inferProviderIDFromModel(model);
+  const displayName = providerName || (inferredProviderID ? getProviderDisplayName(inferredProviderID) : undefined);
+
+  if (!inferredProviderID && !displayName) {
     return {
       id: "aperture",
       name: "Aperture",
@@ -237,8 +261,8 @@ function getProviderGroup(model: ApertureModel): ApertureProviderGroup {
   }
 
   return {
-    id: `aperture-${slugifyProviderSegment(providerID || providerName)}`,
-    name: `Aperture/${providerName}`,
+    id: `aperture-${slugifyProviderSegment(inferredProviderID || displayName || "default")}`,
+    name: `Aperture/${displayName}`,
   };
 }
 

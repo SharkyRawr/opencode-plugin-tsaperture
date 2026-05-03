@@ -7,6 +7,9 @@ import { createRequire } from "module";
 function normalizeBaseUrl(baseUrl) {
     return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
 }
+const PROVIDER_DISPLAY_NAMES = {
+    deepseek: "DeepSeek",
+};
 function slugifyProviderSegment(value) {
     const normalized = value
         .trim()
@@ -14,6 +17,19 @@ function slugifyProviderSegment(value) {
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "");
     return normalized || "default";
+}
+function getProviderDisplayName(providerID) {
+    const slug = slugifyProviderSegment(providerID);
+    return PROVIDER_DISPLAY_NAMES[slug]
+        ?? providerID.trim()
+        ?? slug;
+}
+function inferProviderIDFromModel(model) {
+    const id = model.id.toLowerCase();
+    if (id.startsWith("deepseek-")) {
+        return "deepseek";
+    }
+    return undefined;
 }
 function normalizeModelLookup(value) {
     return value
@@ -82,15 +98,17 @@ function findModelsDevEntry(model, catalog) {
 function getProviderGroup(model) {
     const providerID = model.metadata?.provider?.id?.trim();
     const providerName = model.metadata?.provider?.name?.trim();
-    if (!providerName) {
+    const inferredProviderID = providerID || inferProviderIDFromModel(model);
+    const displayName = providerName || (inferredProviderID ? getProviderDisplayName(inferredProviderID) : undefined);
+    if (!inferredProviderID && !displayName) {
         return {
             id: "aperture",
             name: "Aperture",
         };
     }
     return {
-        id: `aperture-${slugifyProviderSegment(providerID || providerName)}`,
-        name: `Aperture/${providerName}`,
+        id: `aperture-${slugifyProviderSegment(inferredProviderID || displayName || "default")}`,
+        name: `Aperture/${displayName}`,
     };
 }
 function getModelProviderKey(model) {
