@@ -136,6 +136,7 @@ function normalizeBaseUrl(baseUrl: string): string {
 type ApertureProviderGroup = {
   id: string;
   name: string;
+  routeProviderID?: string;
 };
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
@@ -250,10 +251,12 @@ function findModelsDevEntry(model: ApertureModel, catalog?: ModelsDevCatalog): {
 function getProviderGroup(model: ApertureModel): ApertureProviderGroup {
   const providerID = model.metadata?.provider?.id?.trim();
   const providerName = model.metadata?.provider?.name?.trim();
-  const inferredProviderID = providerID || inferProviderIDFromModel(model);
-  const displayName = providerName || (inferredProviderID ? getProviderDisplayName(inferredProviderID) : undefined);
+  const inferredProviderID = inferProviderIDFromModel(model);
+  const providerSegment = providerName || providerID || inferredProviderID;
+  const routeProviderID = providerID || inferredProviderID || providerName;
+  const displayName = providerName || (providerSegment ? getProviderDisplayName(providerSegment) : undefined);
 
-  if (!inferredProviderID && !displayName) {
+  if (!providerSegment || !displayName) {
     return {
       id: "aperture",
       name: "Aperture",
@@ -261,13 +264,19 @@ function getProviderGroup(model: ApertureModel): ApertureProviderGroup {
   }
 
   return {
-    id: `aperture-${slugifyProviderSegment(inferredProviderID || displayName || "default")}`,
+    id: `aperture-${slugifyProviderSegment(providerSegment)}`,
     name: `Aperture/${displayName}`,
+    routeProviderID,
   };
 }
 
 function getModelProviderKey(model: ApertureModel): string {
   return `${getProviderGroup(model).id}:${model.id}`;
+}
+
+function getApertureRouteModelID(model: ApertureModel): string {
+  const routeProviderID = getProviderGroup(model).routeProviderID;
+  return routeProviderID ? `${routeProviderID}/${model.id}` : model.id;
 }
 
 function getReasoningVariants(modelID: string, defaults: Omit<ApertureModelConfig, "id" | "name">): Record<string, Record<string, unknown>> | undefined {
@@ -1095,7 +1104,7 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
         const existingModel = modelsObj[model.id] ?? {};
         modelsObj[model.id] = {
           ...mergeModelConfig(getModelDefaults(model, modelsDevCatalog), existingModel),
-          id: model.id,
+          id: existingModel.id ?? getApertureRouteModelID(model),
           name: existingModel.name ?? model.id,
         };
       }
