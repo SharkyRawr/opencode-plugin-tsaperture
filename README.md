@@ -51,7 +51,11 @@ Contents:
 }
 ```
 
-`apiKey` is optional. Set it when your Aperture endpoint requires bearer auth. If omitted, the plugin passes an empty key to the OpenAI-compatible provider.
+`apiKey` is optional. Set it when your Aperture endpoint requires bearer auth. If omitted, the plugin passes an empty key to the generated providers.
+
+### API compatibility
+
+The plugin reads Aperture provider compatibility metadata and registers each provider with the matching OpenCode provider package. It supports both OpenAI-compatible chat providers and Anthropic Messages API providers, including Aperture routes where the same model is only available through one API flavor.
 
 ### Models.dev enrichment
 

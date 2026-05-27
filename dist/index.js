@@ -95,31 +95,49 @@ function findModelsDevEntry(model, catalog) {
     }
     return exactMatches.length === 1 ? exactMatches[0] : undefined;
 }
-function getProviderGroup(model) {
+function getProviderWireAPI(provider) {
+    const compatibility = provider?.compatibility;
+    if (compatibility?.openai_chat || compatibility?.openai_responses) {
+        return "openai";
+    }
+    if (compatibility?.anthropic_messages) {
+        return "anthropic";
+    }
+    return "openai";
+}
+function getProviderGroup(model, providers) {
     const providerID = model.metadata?.provider?.id?.trim();
     const providerName = model.metadata?.provider?.name?.trim();
     const inferredProviderID = inferProviderIDFromModel(model);
     const providerSegment = providerName || providerID || inferredProviderID;
     const routeProviderID = providerID || inferredProviderID || providerName;
     const displayName = providerName || (providerSegment ? getProviderDisplayName(providerSegment) : undefined);
+    const providerMetadata = routeProviderID ? providers?.get(routeProviderID) : undefined;
+    const wireAPI = getProviderWireAPI(providerMetadata);
     if (!providerSegment || !displayName) {
         return {
             id: "aperture",
             name: "Aperture",
+            wireAPI,
         };
     }
     return {
         id: `aperture-${slugifyProviderSegment(providerSegment)}`,
         name: `Aperture/${displayName}`,
         routeProviderID,
+        wireAPI,
     };
 }
-function getModelProviderKey(model) {
-    return `${getProviderGroup(model).id}:${model.id}`;
+function getModelProviderKey(model, providers) {
+    const group = getProviderGroup(model, providers);
+    return `${group.id}:${group.wireAPI}:${model.id}`;
 }
-function getApertureRouteModelID(model) {
-    const routeProviderID = getProviderGroup(model).routeProviderID;
+function getApertureRouteModelID(model, providers) {
+    const routeProviderID = getProviderGroup(model, providers).routeProviderID;
     return routeProviderID ? `${routeProviderID}/${model.id}` : model.id;
+}
+function getProviderNpmPackage(wireAPI) {
+    return wireAPI === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible";
 }
 function getReasoningVariants(modelID, defaults) {
     if (!defaults.reasoning) {
@@ -413,26 +431,29 @@ function mergeModelConfig(defaults, existing = {}) {
  * consecutive fetches return the same IDs) or the deadline is exceeded.
  * Transient fetch errors are retried within the deadline.
  */
-async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = 500, deadlineMs = 10_000, fetchTimeoutMs = 5_000, minFetchTimeoutMs = 2_000, previousModels = [] } = {}) {
+async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = 500, deadlineMs = 10_000, fetchTimeoutMs = 5_000, minFetchTimeoutMs = 2_000, previousModels = [], previousProviders = new Map(), } = {}) {
     const deadline = Date.now() + deadlineMs;
     let previousIds = previousModels.length > 0
-        ? previousModels.map(getModelProviderKey).sort().join("\n")
+        ? previousModels.map((model) => getModelProviderKey(model, previousProviders)).sort().join("\n")
         : undefined;
     let lastGoodResult = previousModels;
+    let lastGoodProviders = previousProviders;
     let sawSuccessfulFetch = previousModels.length > 0;
     let lastError;
     while (Date.now() < deadline) {
         const remaining = deadline - Date.now();
         if (remaining < minFetchTimeoutMs && lastGoodResult.length > 0) {
-            return lastGoodResult;
+            return { models: lastGoodResult, providers: lastGoodProviders };
         }
         try {
-            const models = await fetchApertureModels(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
-            const ids = models.map(getModelProviderKey).sort().join("\n");
+            const providers = await fetchApertureProviders(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
+            const models = await fetchApertureModels(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs), providers);
+            const ids = models.map((model) => getModelProviderKey(model, providers)).sort().join("\n");
             lastGoodResult = models;
+            lastGoodProviders = providers;
             sawSuccessfulFetch = true;
             if (ids === previousIds) {
-                return models;
+                return { models, providers };
             }
             previousIds = ids;
         }
@@ -441,16 +462,42 @@ async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = 5
             // Transient error — retry until deadline.
         }
         if (Date.now() + pollIntervalMs >= deadline) {
-            return lastGoodResult;
+            return { models: lastGoodResult, providers: lastGoodProviders };
         }
         await new Promise((r) => setTimeout(r, pollIntervalMs));
     }
     if (!sawSuccessfulFetch && lastError) {
         throw lastError;
     }
-    return lastGoodResult;
+    return { models: lastGoodResult, providers: lastGoodProviders };
 }
-async function fetchApertureModels(baseUrl, apiKey, logger, timeoutMs = 15_000) {
+async function fetchApertureProviders(baseUrl, apiKey, logger, timeoutMs = 15_000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const url = `${baseUrl}/api/providers`;
+    try {
+        const response = await fetch(url, {
+            signal: controller.signal,
+            headers: apiKey ? {
+                Authorization: `Bearer ${apiKey}`,
+            } : undefined,
+        });
+        if (!response.ok) {
+            logger.warn(`[TailscaleAperture] Aperture API request failed: GET /api/providers ${response.status} ${response.statusText}`);
+            return new Map();
+        }
+        const providers = await response.json();
+        return new Map(providers.map((provider) => [provider.id, provider]));
+    }
+    catch (error) {
+        logger.warn("[TailscaleAperture] Aperture API request failed: GET /api/providers", error);
+        return new Map();
+    }
+    finally {
+        clearTimeout(timer);
+    }
+}
+async function fetchApertureModels(baseUrl, apiKey, logger, timeoutMs = 15_000, providers = new Map()) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const url = `${baseUrl}/v1/models`;
@@ -476,7 +523,7 @@ async function fetchApertureModels(baseUrl, apiKey, logger, timeoutMs = 15_000) 
         }));
         const mergedModels = [...openAIModels, ...llamaCppModels]
             .filter((model) => model.id);
-        return Array.from(new Map(mergedModels.map((model) => [getModelProviderKey(model), model])).values());
+        return Array.from(new Map(mergedModels.map((model) => [getModelProviderKey(model, providers), model])).values());
     }
     catch (error) {
         if (!(error instanceof Error && error.message.startsWith("Failed to fetch models:"))) {
@@ -736,6 +783,7 @@ export const TailscaleAperturePlugin = async (input, options) => {
     }
     const baseUrl = normalizeBaseUrl(rawBaseUrl);
     let discoveredModels = [];
+    let discoveredProviders = new Map();
     let modelsDevCatalog;
     let modelsLoaded = false;
     let modelLoadPromise;
@@ -789,7 +837,8 @@ export const TailscaleAperturePlugin = async (input, options) => {
         }
         if (refresh && modelsLoaded) {
             // Interactive refresh: single fetch, no stabilization wait.
-            discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger);
+            discoveredProviders = await fetchApertureProviders(baseUrl, apiKey, logger);
+            discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger, 15_000, discoveredProviders);
             return discoveredModels;
         }
         if (!refresh && modelLoadPromise) {
@@ -797,8 +846,10 @@ export const TailscaleAperturePlugin = async (input, options) => {
         }
         modelLoadPromise = waitForStableModels(baseUrl, apiKey, logger, {
             previousModels: discoveredModels,
-        }).then((models) => {
-            discoveredModels = models;
+            previousProviders: discoveredProviders,
+        }).then((result) => {
+            discoveredModels = result.models;
+            discoveredProviders = result.providers;
             modelsLoaded = true;
             return discoveredModels;
         }).finally(() => {
@@ -814,7 +865,7 @@ export const TailscaleAperturePlugin = async (input, options) => {
         const baseProvider = config.provider.aperture ?? {};
         const modelsByProvider = new Map();
         for (const model of discoveredModels) {
-            const group = getProviderGroup(model);
+            const group = getProviderGroup(model, discoveredProviders);
             const existingGroup = modelsByProvider.get(group.id);
             if (existingGroup) {
                 existingGroup.models.push(model);
@@ -834,7 +885,9 @@ export const TailscaleAperturePlugin = async (input, options) => {
             config.provider[group.id] = {
                 ...baseProvider,
                 ...existingProvider,
-                npm: existingProvider.npm ?? baseProvider.npm ?? "@ai-sdk/openai-compatible",
+                npm: existingProvider.npm
+                    ?? (group.wireAPI === "openai" ? baseProvider.npm : undefined)
+                    ?? getProviderNpmPackage(group.wireAPI),
                 name: existingProvider.name ?? group.name,
                 options: {
                     ...baseProvider.options,
@@ -848,7 +901,7 @@ export const TailscaleAperturePlugin = async (input, options) => {
                 const existingModel = modelsObj[model.id] ?? {};
                 modelsObj[model.id] = {
                     ...mergeModelConfig(getModelDefaults(model, modelsDevCatalog), existingModel),
-                    id: existingModel.id ?? getApertureRouteModelID(model),
+                    id: existingModel.id ?? getApertureRouteModelID(model, discoveredProviders),
                     name: existingModel.name ?? model.id,
                 };
             }
@@ -865,7 +918,7 @@ export const TailscaleAperturePlugin = async (input, options) => {
         return modelsByProvider.size;
     }
     function countProviderGroups(models) {
-        return new Set(models.map((model) => getProviderGroup(model).id)).size;
+        return new Set(models.map((model) => getProviderGroup(model, discoveredProviders).id)).size;
     }
     async function loadModelsOnStartup() {
         try {
