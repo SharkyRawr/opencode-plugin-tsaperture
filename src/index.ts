@@ -42,6 +42,11 @@ type ApertureProviderMetadata = {
   compatibility?: ApertureProviderCompatibility;
 };
 
+type ApertureProviderFetchResult = {
+  providers: Map<string, ApertureProviderMetadata>;
+  degraded: boolean;
+};
+
 interface ApertureConfig {
   baseUrl?: string;
   apiKey?: string;
@@ -173,8 +178,7 @@ function slugifyProviderSegment(value: string): string {
 function getProviderDisplayName(providerID: string): string {
   const slug = slugifyProviderSegment(providerID);
   return PROVIDER_DISPLAY_NAMES[slug]
-    ?? providerID.trim()
-    ?? slug;
+    ?? (providerID.trim() || slug);
 }
 
 function inferProviderIDFromModel(model: ApertureModel): string | undefined {
@@ -401,6 +405,18 @@ function getReasoningVariants(modelID: string, defaults: Omit<ApertureModelConfi
   ]));
 }
 
+function isKimiModel(model: ApertureModel): boolean {
+  const id = model.id.toLowerCase();
+  const providerID = model.metadata?.provider?.id?.toLowerCase();
+  const providerName = model.metadata?.provider?.name?.toLowerCase();
+  return id.includes("kimi")
+    || id.includes("k2p")
+    || providerID === "kimi"
+    || providerID === "kimi-for-coding"
+    || providerName === "kimi"
+    || providerName === "kimi-for-coding";
+}
+
 function getModelsDevDefaults(entry: {
   provider: ModelsDevProvider;
   model: ModelsDevModel;
@@ -430,41 +446,11 @@ function getModelsDevDefaults(entry: {
 }
 
 function getOperationalDefaults(model: ApertureModel): Omit<ApertureModelConfig, "id" | "name"> {
-  const id = model.id.toLowerCase();
-  const providerID = model.metadata?.provider?.id?.toLowerCase();
-  const providerName = model.metadata?.provider?.name?.toLowerCase();
-  const isZai = id.includes("glm")
-    || providerID === "zai"
-    || providerID === "z.ai"
-    || providerID === "zai-coding-plan"
-    || providerName === "z.ai"
-    || providerName === "zai-coding-plan";
-  const isKimi = id.includes("kimi")
-    || id.includes("k2p")
-    || providerID === "kimi"
-    || providerID === "kimi-for-coding"
-    || providerName === "kimi"
-    || providerName === "kimi-for-coding";
-
-  if (!isZai && !isKimi) {
-    return {};
-  }
-
-  return {
-    interleaved: {
-      field: "reasoning_content",
+  return isKimiModel(model) ? {
+    headers: {
+      "User-Agent": "KimiCLI/1.3",
     },
-    options: {
-      thinking: {
-        type: "enabled",
-      },
-    },
-    ...(isKimi ? {
-      headers: {
-        "User-Agent": "KimiCLI/1.3",
-      },
-    } : {}),
-  };
+  } : {};
 }
 
 function getModelDefaults(model: ApertureModel, catalog?: ModelsDevCatalog): Omit<ApertureModelConfig, "id" | "name"> {
@@ -473,73 +459,7 @@ function getModelDefaults(model: ApertureModel, catalog?: ModelsDevCatalog): Omi
     return mergeModelConfig(getModelsDevDefaults(modelsDevEntry), getOperationalDefaults(model));
   }
 
-  const id = model.id.toLowerCase();
-  const providerID = model.metadata?.provider?.id?.toLowerCase();
-  const providerName = model.metadata?.provider?.name?.toLowerCase();
-  const isZai = id.includes("glm")
-    || providerID === "zai"
-    || providerID === "z.ai"
-    || providerID === "zai-coding-plan"
-    || providerName === "z.ai"
-    || providerName === "zai-coding-plan";
-  const isKimi = id.includes("kimi")
-    || providerID === "kimi"
-    || providerID === "kimi-for-coding"
-    || providerName === "kimi"
-    || providerName === "kimi-for-coding";
-
-  if (isZai) {
-    return {
-      limit: {
-        context: 200_000,
-        output: 8_192,
-      },
-      reasoning: true,
-      temperature: true,
-      tool_call: true,
-      modalities: {
-        input: ["text"],
-        output: ["text"],
-      },
-      interleaved: {
-        field: "reasoning_content",
-      },
-      options: {
-        thinking: {
-          type: "enabled",
-        },
-      },
-    };
-  }
-
-  if (isKimi) {
-    return {
-      limit: {
-        context: 200_000,
-        output: 128_000,
-      },
-      reasoning: true,
-      temperature: true,
-      tool_call: true,
-      modalities: {
-        input: ["text"],
-        output: ["text"],
-      },
-      interleaved: {
-        field: "reasoning_content",
-      },
-      options: {
-        thinking: {
-          type: "enabled",
-        },
-      },
-      headers: {
-        "User-Agent": "KimiCLI/1.3",
-      },
-    };
-  }
-
-  return {
+  return mergeModelConfig({
     limit: {
       context: 128_000,
       output: 8_192,
@@ -559,7 +479,7 @@ function getModelDefaults(model: ApertureModel, catalog?: ModelsDevCatalog): Omi
         type: "enabled",
       },
     },
-  };
+  }, getOperationalDefaults(model));
 }
 
 function getDefaultReleaseDate(created?: number): string {
@@ -654,33 +574,36 @@ async function waitForStableModels(
     previousModels = [] as ApertureModel[],
     previousProviders = new Map<string, ApertureProviderMetadata>(),
   } = {},
-): Promise<{ models: ApertureModel[]; providers: Map<string, ApertureProviderMetadata> }> {
+): Promise<{ models: ApertureModel[]; providers: Map<string, ApertureProviderMetadata>; providersDegraded: boolean }> {
   const deadline = Date.now() + deadlineMs;
   let previousIds: string | undefined = previousModels.length > 0
     ? previousModels.map((model) => getModelProviderKey(model, previousProviders)).sort().join("\n")
     : undefined;
   let lastGoodResult: ApertureModel[] = previousModels;
   let lastGoodProviders = previousProviders;
+  let lastGoodProvidersDegraded = false;
   let sawSuccessfulFetch = previousModels.length > 0;
   let lastError: unknown;
 
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
     if (remaining < minFetchTimeoutMs && lastGoodResult.length > 0) {
-      return { models: lastGoodResult, providers: lastGoodProviders };
+      return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
     }
 
     try {
-      const providers = await fetchApertureProviders(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
+      const providerResult = await fetchApertureProviders(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
+      const providers = providerResult.providers;
       const models = await fetchApertureModels(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs), providers);
       const ids = models.map((model) => getModelProviderKey(model, providers)).sort().join("\n");
 
       lastGoodResult = models;
       lastGoodProviders = providers;
+      lastGoodProvidersDegraded = providerResult.degraded;
       sawSuccessfulFetch = true;
 
       if (ids === previousIds) {
-        return { models, providers };
+        return { models, providers, providersDegraded: providerResult.degraded };
       }
       previousIds = ids;
     } catch (error) {
@@ -689,7 +612,7 @@ async function waitForStableModels(
     }
 
     if (Date.now() + pollIntervalMs >= deadline) {
-      return { models: lastGoodResult, providers: lastGoodProviders };
+      return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
     }
 
     await new Promise((r) => setTimeout(r, pollIntervalMs));
@@ -699,10 +622,10 @@ async function waitForStableModels(
     throw lastError;
   }
 
-  return { models: lastGoodResult, providers: lastGoodProviders };
+  return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
 }
 
-async function fetchApertureProviders(baseUrl: string, apiKey: string, logger: Logger, timeoutMs = 15_000): Promise<Map<string, ApertureProviderMetadata>> {
+async function fetchApertureProviders(baseUrl: string, apiKey: string, logger: Logger, timeoutMs = 15_000): Promise<ApertureProviderFetchResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const url = `${baseUrl}/api/providers`;
@@ -715,14 +638,14 @@ async function fetchApertureProviders(baseUrl: string, apiKey: string, logger: L
     });
     if (!response.ok) {
       logger.warn(`[TailscaleAperture] Aperture API request failed: GET /api/providers ${response.status} ${response.statusText}`);
-      return new Map();
+      return { providers: new Map(), degraded: true };
     }
 
     const providers = await response.json() as ApertureProviderMetadata[];
-    return new Map(providers.map((provider) => [provider.id, provider]));
+    return { providers: new Map(providers.map((provider) => [provider.id, provider])), degraded: false };
   } catch (error) {
     logger.warn("[TailscaleAperture] Aperture API request failed: GET /api/providers", error);
-    return new Map();
+    return { providers: new Map(), degraded: true };
   } finally {
     clearTimeout(timer);
   }
@@ -850,8 +773,6 @@ function getOpenCodeConfigDirs(): string[] {
   return dirs;
 }
 
-const openCodeConfigDirs = getOpenCodeConfigDirs();
-
 type Logger = {
   log: (message: string, ...args: unknown[]) => void;
   warn: (message: string, ...args: unknown[]) => void;
@@ -861,7 +782,7 @@ type Logger = {
 };
 
 async function loadApertureConfig(logger: Logger): Promise<ApertureConfig> {
-  for (const configDir of openCodeConfigDirs) {
+  for (const configDir of getOpenCodeConfigDirs()) {
     const configPath = join(configDir, "aperture.json");
     try {
       const content = await readFile(configPath, "utf-8");
@@ -1055,6 +976,8 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
   const baseUrl = normalizeBaseUrl(rawBaseUrl);
   let discoveredModels: ApertureModel[] = [];
   let discoveredProviders = new Map<string, ApertureProviderMetadata>();
+  let providerMetadataDegraded = false;
+  let providerMetadataWarningShown = false;
   let modelsDevCatalog: ModelsDevCatalog | undefined;
   let modelsLoaded = false;
   let modelLoadPromise: Promise<ApertureModel[]> | undefined;
@@ -1106,6 +1029,17 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
     }
   }
 
+  function warnProviderMetadataDegraded(): void {
+    if (!providerMetadataDegraded || providerMetadataWarningShown) {
+      return;
+    }
+
+    providerMetadataWarningShown = true;
+    const message = "Aperture provider metadata could not be loaded. Models were registered in degraded mode; provider grouping or wire API selection may be less accurate.";
+    logger.warn(`[TailscaleAperture] ${message}`);
+    showMessage("error", message);
+  }
+
   async function loadModels(refresh = false): Promise<ApertureModel[]> {
     if (!refresh && modelsLoaded) {
       return discoveredModels;
@@ -1113,8 +1047,11 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
 
     if (refresh && modelsLoaded) {
       // Interactive refresh: single fetch, no stabilization wait.
-      discoveredProviders = await fetchApertureProviders(baseUrl, apiKey, logger);
+      const providerResult = await fetchApertureProviders(baseUrl, apiKey, logger);
+      discoveredProviders = providerResult.providers;
+      providerMetadataDegraded = providerResult.degraded;
       discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger, 15_000, discoveredProviders);
+      warnProviderMetadataDegraded();
       return discoveredModels;
     }
 
@@ -1128,7 +1065,9 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
     }).then((result) => {
       discoveredModels = result.models;
       discoveredProviders = result.providers;
+      providerMetadataDegraded = result.providersDegraded;
       modelsLoaded = true;
+      warnProviderMetadataDegraded();
       return discoveredModels;
     }).finally(() => {
       modelLoadPromise = undefined;
@@ -1144,6 +1083,7 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       return 0;
     }
 
+    const hadBaseProvider = Object.prototype.hasOwnProperty.call(config.provider, "aperture");
     const baseProvider = config.provider.aperture ?? {};
     const modelsByProvider = new Map<string, {
       group: ApertureProviderGroup;
@@ -1202,7 +1142,7 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
     }
 
     const hasDefaultGroup = modelsByProvider.has("aperture");
-    if (!hasDefaultGroup) {
+    if (!hasDefaultGroup && !hadBaseProvider) {
       delete config.provider.aperture;
     }
 

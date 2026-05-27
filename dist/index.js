@@ -21,8 +21,7 @@ function slugifyProviderSegment(value) {
 function getProviderDisplayName(providerID) {
     const slug = slugifyProviderSegment(providerID);
     return PROVIDER_DISPLAY_NAMES[slug]
-        ?? providerID.trim()
-        ?? slug;
+        ?? (providerID.trim() || slug);
 }
 function inferProviderIDFromModel(model) {
     const id = model.id.toLowerCase();
@@ -215,6 +214,17 @@ function getReasoningVariants(modelID, defaults) {
         { reasoningEffort: effort },
     ]));
 }
+function isKimiModel(model) {
+    const id = model.id.toLowerCase();
+    const providerID = model.metadata?.provider?.id?.toLowerCase();
+    const providerName = model.metadata?.provider?.name?.toLowerCase();
+    return id.includes("kimi")
+        || id.includes("k2p")
+        || providerID === "kimi"
+        || providerID === "kimi-for-coding"
+        || providerName === "kimi"
+        || providerName === "kimi-for-coding";
+}
 function getModelsDevDefaults(entry) {
     const defaults = {
         family: entry.model.family,
@@ -236,109 +246,18 @@ function getModelsDevDefaults(entry) {
     return Object.fromEntries(Object.entries(defaults).filter(([, value]) => value !== undefined));
 }
 function getOperationalDefaults(model) {
-    const id = model.id.toLowerCase();
-    const providerID = model.metadata?.provider?.id?.toLowerCase();
-    const providerName = model.metadata?.provider?.name?.toLowerCase();
-    const isZai = id.includes("glm")
-        || providerID === "zai"
-        || providerID === "z.ai"
-        || providerID === "zai-coding-plan"
-        || providerName === "z.ai"
-        || providerName === "zai-coding-plan";
-    const isKimi = id.includes("kimi")
-        || id.includes("k2p")
-        || providerID === "kimi"
-        || providerID === "kimi-for-coding"
-        || providerName === "kimi"
-        || providerName === "kimi-for-coding";
-    if (!isZai && !isKimi) {
-        return {};
-    }
-    return {
-        interleaved: {
-            field: "reasoning_content",
+    return isKimiModel(model) ? {
+        headers: {
+            "User-Agent": "KimiCLI/1.3",
         },
-        options: {
-            thinking: {
-                type: "enabled",
-            },
-        },
-        ...(isKimi ? {
-            headers: {
-                "User-Agent": "KimiCLI/1.3",
-            },
-        } : {}),
-    };
+    } : {};
 }
 function getModelDefaults(model, catalog) {
     const modelsDevEntry = findModelsDevEntry(model, catalog);
     if (modelsDevEntry) {
         return mergeModelConfig(getModelsDevDefaults(modelsDevEntry), getOperationalDefaults(model));
     }
-    const id = model.id.toLowerCase();
-    const providerID = model.metadata?.provider?.id?.toLowerCase();
-    const providerName = model.metadata?.provider?.name?.toLowerCase();
-    const isZai = id.includes("glm")
-        || providerID === "zai"
-        || providerID === "z.ai"
-        || providerID === "zai-coding-plan"
-        || providerName === "z.ai"
-        || providerName === "zai-coding-plan";
-    const isKimi = id.includes("kimi")
-        || providerID === "kimi"
-        || providerID === "kimi-for-coding"
-        || providerName === "kimi"
-        || providerName === "kimi-for-coding";
-    if (isZai) {
-        return {
-            limit: {
-                context: 200_000,
-                output: 8_192,
-            },
-            reasoning: true,
-            temperature: true,
-            tool_call: true,
-            modalities: {
-                input: ["text"],
-                output: ["text"],
-            },
-            interleaved: {
-                field: "reasoning_content",
-            },
-            options: {
-                thinking: {
-                    type: "enabled",
-                },
-            },
-        };
-    }
-    if (isKimi) {
-        return {
-            limit: {
-                context: 200_000,
-                output: 128_000,
-            },
-            reasoning: true,
-            temperature: true,
-            tool_call: true,
-            modalities: {
-                input: ["text"],
-                output: ["text"],
-            },
-            interleaved: {
-                field: "reasoning_content",
-            },
-            options: {
-                thinking: {
-                    type: "enabled",
-                },
-            },
-            headers: {
-                "User-Agent": "KimiCLI/1.3",
-            },
-        };
-    }
-    return {
+    return mergeModelConfig({
         limit: {
             context: 128_000,
             output: 8_192,
@@ -358,7 +277,7 @@ function getModelDefaults(model, catalog) {
                 type: "enabled",
             },
         },
-    };
+    }, getOperationalDefaults(model));
 }
 function getDefaultReleaseDate(created) {
     if (!created || created <= 0) {
@@ -438,22 +357,25 @@ async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = 5
         : undefined;
     let lastGoodResult = previousModels;
     let lastGoodProviders = previousProviders;
+    let lastGoodProvidersDegraded = false;
     let sawSuccessfulFetch = previousModels.length > 0;
     let lastError;
     while (Date.now() < deadline) {
         const remaining = deadline - Date.now();
         if (remaining < minFetchTimeoutMs && lastGoodResult.length > 0) {
-            return { models: lastGoodResult, providers: lastGoodProviders };
+            return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
         }
         try {
-            const providers = await fetchApertureProviders(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
+            const providerResult = await fetchApertureProviders(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
+            const providers = providerResult.providers;
             const models = await fetchApertureModels(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs), providers);
             const ids = models.map((model) => getModelProviderKey(model, providers)).sort().join("\n");
             lastGoodResult = models;
             lastGoodProviders = providers;
+            lastGoodProvidersDegraded = providerResult.degraded;
             sawSuccessfulFetch = true;
             if (ids === previousIds) {
-                return { models, providers };
+                return { models, providers, providersDegraded: providerResult.degraded };
             }
             previousIds = ids;
         }
@@ -462,14 +384,14 @@ async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = 5
             // Transient error — retry until deadline.
         }
         if (Date.now() + pollIntervalMs >= deadline) {
-            return { models: lastGoodResult, providers: lastGoodProviders };
+            return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
         }
         await new Promise((r) => setTimeout(r, pollIntervalMs));
     }
     if (!sawSuccessfulFetch && lastError) {
         throw lastError;
     }
-    return { models: lastGoodResult, providers: lastGoodProviders };
+    return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
 }
 async function fetchApertureProviders(baseUrl, apiKey, logger, timeoutMs = 15_000) {
     const controller = new AbortController();
@@ -484,14 +406,14 @@ async function fetchApertureProviders(baseUrl, apiKey, logger, timeoutMs = 15_00
         });
         if (!response.ok) {
             logger.warn(`[TailscaleAperture] Aperture API request failed: GET /api/providers ${response.status} ${response.statusText}`);
-            return new Map();
+            return { providers: new Map(), degraded: true };
         }
         const providers = await response.json();
-        return new Map(providers.map((provider) => [provider.id, provider]));
+        return { providers: new Map(providers.map((provider) => [provider.id, provider])), degraded: false };
     }
     catch (error) {
         logger.warn("[TailscaleAperture] Aperture API request failed: GET /api/providers", error);
-        return new Map();
+        return { providers: new Map(), degraded: true };
     }
     finally {
         clearTimeout(timer);
@@ -605,9 +527,8 @@ function getOpenCodeConfigDirs() {
     }
     return dirs;
 }
-const openCodeConfigDirs = getOpenCodeConfigDirs();
 async function loadApertureConfig(logger) {
-    for (const configDir of openCodeConfigDirs) {
+    for (const configDir of getOpenCodeConfigDirs()) {
         const configPath = join(configDir, "aperture.json");
         try {
             const content = await readFile(configPath, "utf-8");
@@ -784,6 +705,8 @@ export const TailscaleAperturePlugin = async (input, options) => {
     const baseUrl = normalizeBaseUrl(rawBaseUrl);
     let discoveredModels = [];
     let discoveredProviders = new Map();
+    let providerMetadataDegraded = false;
+    let providerMetadataWarningShown = false;
     let modelsDevCatalog;
     let modelsLoaded = false;
     let modelLoadPromise;
@@ -831,14 +754,26 @@ export const TailscaleAperturePlugin = async (input, options) => {
             logger.warn("[TailscaleAperture] Failed to print error to chat:", error);
         }
     }
+    function warnProviderMetadataDegraded() {
+        if (!providerMetadataDegraded || providerMetadataWarningShown) {
+            return;
+        }
+        providerMetadataWarningShown = true;
+        const message = "Aperture provider metadata could not be loaded. Models were registered in degraded mode; provider grouping or wire API selection may be less accurate.";
+        logger.warn(`[TailscaleAperture] ${message}`);
+        showMessage("error", message);
+    }
     async function loadModels(refresh = false) {
         if (!refresh && modelsLoaded) {
             return discoveredModels;
         }
         if (refresh && modelsLoaded) {
             // Interactive refresh: single fetch, no stabilization wait.
-            discoveredProviders = await fetchApertureProviders(baseUrl, apiKey, logger);
+            const providerResult = await fetchApertureProviders(baseUrl, apiKey, logger);
+            discoveredProviders = providerResult.providers;
+            providerMetadataDegraded = providerResult.degraded;
             discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger, 15_000, discoveredProviders);
+            warnProviderMetadataDegraded();
             return discoveredModels;
         }
         if (!refresh && modelLoadPromise) {
@@ -850,7 +785,9 @@ export const TailscaleAperturePlugin = async (input, options) => {
         }).then((result) => {
             discoveredModels = result.models;
             discoveredProviders = result.providers;
+            providerMetadataDegraded = result.providersDegraded;
             modelsLoaded = true;
+            warnProviderMetadataDegraded();
             return discoveredModels;
         }).finally(() => {
             modelLoadPromise = undefined;
@@ -862,6 +799,7 @@ export const TailscaleAperturePlugin = async (input, options) => {
         if (discoveredModels.length === 0) {
             return 0;
         }
+        const hadBaseProvider = Object.prototype.hasOwnProperty.call(config.provider, "aperture");
         const baseProvider = config.provider.aperture ?? {};
         const modelsByProvider = new Map();
         for (const model of discoveredModels) {
@@ -912,7 +850,7 @@ export const TailscaleAperturePlugin = async (input, options) => {
             }
         }
         const hasDefaultGroup = modelsByProvider.has("aperture");
-        if (!hasDefaultGroup) {
+        if (!hasDefaultGroup && !hadBaseProvider) {
             delete config.provider.aperture;
         }
         return modelsByProvider.size;
