@@ -136,6 +136,12 @@ type ModelsDevModel = {
     output: Array<"text" | "audio" | "image" | "video" | "pdf">;
   };
   interleaved?: InterleavedConfig;
+  reasoning_options?: Array<{
+    type: "effort" | "toggle" | "budget_tokens" | string;
+    values?: string[];
+    min?: number;
+    max?: number;
+  }>;
 };
 
 type ModelsDevProvider = {
@@ -201,33 +207,22 @@ function normalizeModelLookup(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-function getProviderAliases(model: ApertureModel): string[] {
-  const providerID = model.metadata?.provider?.id ?? "";
-  const providerName = model.metadata?.provider?.name ?? "";
-  const ownedBy = model.owned_by ?? "";
-  const id = model.id.toLowerCase();
-  const raw = [providerID, providerName, ownedBy].filter(Boolean);
-  const aliases = new Set(raw.flatMap((value) => [
-    value,
-    slugifyProviderSegment(value),
-    normalizeModelLookup(value),
-  ]));
-
-  if (id.includes("glm") || [...aliases].some((value) => ["zai", "z-ai", "z.ai", "zai-coding-plan"].includes(value))) {
-    aliases.add("zai");
-    aliases.add("zai-coding-plan");
+function findProviderModel(provider: ModelsDevProvider, modelKeys: Set<string>): ModelsDevModel | undefined {
+  for (const key of modelKeys) {
+    const candidate = provider.models[key];
+    if (candidate) {
+      return candidate;
+    }
   }
 
-  if (id.includes("kimi") || id.includes("k2p") || [...aliases].some((value) => ["kimi", "kimi-for-coding", "moonshot", "moonshotai"].includes(value))) {
-    aliases.add("kimi-for-coding");
-    aliases.add("moonshotai");
-    aliases.add("moonshotai-cn");
-  }
-
-  return [...aliases].filter(Boolean);
+  return undefined;
 }
 
-function findModelsDevEntry(model: ApertureModel, catalog?: ModelsDevCatalog): {
+function findModelsDevEntry(
+  model: ApertureModel,
+  catalog?: ModelsDevCatalog,
+  apertureProvider?: ApertureProviderMetadata,
+): {
   provider: ModelsDevProvider;
   model: ModelsDevModel;
 } | undefined {
@@ -240,19 +235,13 @@ function findModelsDevEntry(model: ApertureModel, catalog?: ModelsDevCatalog): {
     model.id.toLowerCase(),
     normalizeModelLookup(model.id),
   ]);
-  const providerAliases = getProviderAliases(model);
+  const apertureProviderID = apertureProvider?.id ?? model.metadata?.provider?.id;
+  const provider = apertureProviderID ? catalog[apertureProviderID] ?? catalog[apertureProviderID.toLowerCase()] : undefined;
 
-  for (const alias of providerAliases) {
-    const provider = catalog[alias];
-    if (!provider) {
-      continue;
-    }
-
-    for (const key of modelKeys) {
-      const candidate = provider.models[key];
-      if (candidate) {
-        return { provider, model: candidate };
-      }
+  if (provider) {
+    const candidate = findProviderModel(provider, modelKeys);
+    if (candidate) {
+      return { provider, model: candidate };
     }
   }
 
@@ -320,12 +309,33 @@ function getProviderNpmPackage(wireAPI: ApertureWireAPI): string {
   return wireAPI === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible";
 }
 
-function getReasoningVariants(modelID: string, defaults: Omit<ApertureModelConfig, "id" | "name">): Record<string, Record<string, unknown>> | undefined {
+function getCatalogReasoningVariants(model: ModelsDevModel): Record<string, Record<string, unknown>> | undefined {
+  const effort = model.reasoning_options?.find((option) => option.type === "effort");
+  const values = effort?.values
+    ?.map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  if (!values || values.length === 0) {
+    return undefined;
+  }
+
+  return Object.fromEntries(values.map((value) => [
+    value,
+    { reasoningEffort: value },
+  ]));
+}
+
+function getReasoningVariants(model: ModelsDevModel, defaults: Omit<ApertureModelConfig, "id" | "name">): Record<string, Record<string, unknown>> | undefined {
+  const catalogVariants = getCatalogReasoningVariants(model);
+  if (catalogVariants && Object.keys(catalogVariants).length > 0) {
+    return catalogVariants;
+  }
+
   if (!defaults.reasoning) {
     return undefined;
   }
 
-  const id = modelID.toLowerCase();
+  const id = model.id.toLowerCase();
   if (
     id.includes("deepseek-chat") ||
     id.includes("deepseek-reasoner") ||
@@ -435,7 +445,7 @@ function getModelsDevDefaults(entry: {
     interleaved: entry.model.interleaved,
   };
 
-  const variants = getReasoningVariants(entry.model.id, defaults);
+  const variants = getReasoningVariants(entry.model, defaults);
   if (variants && Object.keys(variants).length > 0) {
     defaults.variants = variants;
   }
@@ -453,8 +463,14 @@ function getOperationalDefaults(model: ApertureModel): Omit<ApertureModelConfig,
   } : {};
 }
 
-function getModelDefaults(model: ApertureModel, catalog?: ModelsDevCatalog): Omit<ApertureModelConfig, "id" | "name"> {
-  const modelsDevEntry = findModelsDevEntry(model, catalog);
+function getModelDefaults(
+  model: ApertureModel,
+  catalog?: ModelsDevCatalog,
+  providers?: Map<string, ApertureProviderMetadata>,
+): Omit<ApertureModelConfig, "id" | "name"> {
+  const routeProviderID = getProviderGroup(model, providers).routeProviderID;
+  const apertureProvider = routeProviderID ? providers?.get(routeProviderID) : undefined;
+  const modelsDevEntry = findModelsDevEntry(model, catalog, apertureProvider);
   if (modelsDevEntry) {
     return mergeModelConfig(getModelsDevDefaults(modelsDevEntry), getOperationalDefaults(model));
   }
@@ -1128,7 +1144,7 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       for (const model of models) {
         const existingModel = modelsObj[model.id] ?? {};
         modelsObj[model.id] = {
-          ...mergeModelConfig(getModelDefaults(model, modelsDevCatalog), existingModel),
+          ...mergeModelConfig(getModelDefaults(model, modelsDevCatalog, discoveredProviders), existingModel),
           id: existingModel.id ?? getApertureRouteModelID(model, discoveredProviders),
           name: existingModel.name ?? model.id,
         };

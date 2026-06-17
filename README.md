@@ -61,6 +61,8 @@ The plugin reads Aperture provider compatibility metadata and registers each pro
 
 The plugin enriches Aperture's `/v1/models` response with the same Models.dev catalog OpenCode uses. When a discovered model matches a catalog provider/model ID, the generated OpenCode config includes the catalog's family, release date, cost, modalities, reasoning/tool/temperature support, interleaved reasoning field, variants, and accurate `limit.context`, `limit.input`, and `limit.output` values.
 
+**Important:** For full provider-specific feature support, the Aperture provider `id` and model `id` should match the Models.dev respective IDs. This lets the plugin select the correct provider-specific model definition when the same model ID exists under multiple Models.dev providers, including provider-specific reasoning effort options.
+
 Optional `aperture.json` fields:
 
 ```json
