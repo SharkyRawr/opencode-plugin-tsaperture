@@ -4,12 +4,15 @@ import { join } from "path";
 import { readFile } from "fs/promises";
 import { platform } from "process";
 import { createRequire } from "module";
+const STARTUP_MODEL_STABILIZATION_DEADLINE_MS = 4_000;
+const STARTUP_FETCH_TIMEOUT_MS = 2_000;
+const STARTUP_POLL_INTERVAL_MS = 250;
+const STARTUP_MIN_FETCH_TIMEOUT_MS = 750;
+const INTERACTIVE_FETCH_TIMEOUT_MS = 5_000;
+const MODELS_DEV_FETCH_TIMEOUT_MS = 3_000;
 function normalizeBaseUrl(baseUrl) {
     return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
 }
-const PROVIDER_DISPLAY_NAMES = {
-    deepseek: "DeepSeek",
-};
 function slugifyProviderSegment(value) {
     const normalized = value
         .trim()
@@ -20,15 +23,7 @@ function slugifyProviderSegment(value) {
 }
 function getProviderDisplayName(providerID) {
     const slug = slugifyProviderSegment(providerID);
-    return PROVIDER_DISPLAY_NAMES[slug]
-        ?? (providerID.trim() || slug);
-}
-function inferProviderIDFromModel(model) {
-    const id = model.id.toLowerCase();
-    if (id.startsWith("deepseek-")) {
-        return "deepseek";
-    }
-    return undefined;
+    return providerID.trim() || slug;
 }
 function normalizeModelLookup(value) {
     return value
@@ -89,9 +84,8 @@ function getProviderWireAPI(provider) {
 function getProviderGroup(model, providers) {
     const providerID = model.metadata?.provider?.id?.trim();
     const providerName = model.metadata?.provider?.name?.trim();
-    const inferredProviderID = inferProviderIDFromModel(model);
-    const providerSegment = providerName || providerID || inferredProviderID;
-    const routeProviderID = providerID || inferredProviderID || providerName;
+    const providerSegment = providerName || providerID;
+    const routeProviderID = providerID || providerName;
     const displayName = providerName || (providerSegment ? getProviderDisplayName(providerSegment) : undefined);
     const providerMetadata = routeProviderID ? providers?.get(routeProviderID) : undefined;
     const wireAPI = getProviderWireAPI(providerMetadata);
@@ -133,97 +127,6 @@ function getCatalogReasoningVariants(model) {
         { reasoningEffort: value },
     ]));
 }
-function getReasoningVariants(model, defaults) {
-    const catalogVariants = getCatalogReasoningVariants(model);
-    if (catalogVariants && Object.keys(catalogVariants).length > 0) {
-        return catalogVariants;
-    }
-    if (!defaults.reasoning) {
-        return undefined;
-    }
-    const id = model.id.toLowerCase();
-    if (id.includes("deepseek-chat") ||
-        id.includes("deepseek-reasoner") ||
-        id.includes("deepseek-r1") ||
-        id.includes("deepseek-v3") ||
-        id.includes("minimax") ||
-        id.includes("glm") ||
-        id.includes("kimi") ||
-        id.includes("k2p") ||
-        id.includes("qwen") ||
-        id.includes("big-pickle")) {
-        return undefined;
-    }
-    if (id.includes("grok") && id.includes("grok-3-mini")) {
-        return {
-            low: { reasoningEffort: "low" },
-            high: { reasoningEffort: "high" },
-        };
-    }
-    if (id.includes("grok")) {
-        return undefined;
-    }
-    if (id.includes("claude")) {
-        const output = defaults.limit?.output ?? 32_000;
-        return {
-            high: {
-                thinking: {
-                    type: "enabled",
-                    budgetTokens: Math.min(16_000, Math.floor(output / 2 - 1)),
-                },
-            },
-            max: {
-                thinking: {
-                    type: "enabled",
-                    budgetTokens: Math.min(31_999, output - 1),
-                },
-            },
-        };
-    }
-    if (id.includes("gemini")) {
-        if (id.includes("2.5")) {
-            return {
-                high: {
-                    thinkingConfig: {
-                        includeThoughts: true,
-                        thinkingBudget: 16_000,
-                    },
-                },
-                max: {
-                    thinkingConfig: {
-                        includeThoughts: true,
-                        thinkingBudget: 24_576,
-                    },
-                },
-            };
-        }
-        const levels = id.includes("3.1") ? ["low", "medium", "high"] : ["low", "high"];
-        return Object.fromEntries(levels.map((effort) => [
-            effort,
-            {
-                thinkingConfig: {
-                    includeThoughts: true,
-                    thinkingLevel: effort,
-                },
-            },
-        ]));
-    }
-    return Object.fromEntries(["low", "medium", "high"].map((effort) => [
-        effort,
-        { reasoningEffort: effort },
-    ]));
-}
-function isKimiModel(model) {
-    const id = model.id.toLowerCase();
-    const providerID = model.metadata?.provider?.id?.toLowerCase();
-    const providerName = model.metadata?.provider?.name?.toLowerCase();
-    return id.includes("kimi")
-        || id.includes("k2p")
-        || providerID === "kimi"
-        || providerID === "kimi-for-coding"
-        || providerName === "kimi"
-        || providerName === "kimi-for-coding";
-}
 function getModelsDevDefaults(entry) {
     const defaults = {
         family: entry.model.family,
@@ -238,47 +141,41 @@ function getModelsDevDefaults(entry) {
         modalities: entry.model.modalities,
         interleaved: entry.model.interleaved,
     };
-    const variants = getReasoningVariants(entry.model, defaults);
+    const variants = getCatalogReasoningVariants(entry.model);
     if (variants && Object.keys(variants).length > 0) {
         defaults.variants = variants;
     }
     return Object.fromEntries(Object.entries(defaults).filter(([, value]) => value !== undefined));
-}
-function getOperationalDefaults(model) {
-    return isKimiModel(model) ? {
-        headers: {
-            "User-Agent": "KimiCLI/1.3",
-        },
-    } : {};
 }
 function getModelDefaults(model, catalog, providers) {
     const routeProviderID = getProviderGroup(model, providers).routeProviderID;
     const apertureProvider = routeProviderID ? providers?.get(routeProviderID) : undefined;
     const modelsDevEntry = findModelsDevEntry(model, catalog, apertureProvider);
     if (modelsDevEntry) {
-        return mergeModelConfig(getModelsDevDefaults(modelsDevEntry), getOperationalDefaults(model));
+        return {
+            defaults: getModelsDevDefaults(modelsDevEntry),
+            matchedModelsDev: true,
+        };
     }
-    return mergeModelConfig({
-        limit: {
-            context: 128_000,
-            output: 8_192,
-        },
-        reasoning: false,
-        temperature: true,
-        tool_call: true,
-        modalities: {
-            input: ["text"],
-            output: ["text"],
-        },
-        interleaved: {
-            field: "reasoning_content",
-        },
-        options: {
-            thinking: {
-                type: "enabled",
+    return {
+        defaults: {
+            limit: {
+                context: 128_000,
+                output: 8_192,
+            },
+            reasoning: false,
+            temperature: true,
+            tool_call: true,
+            modalities: {
+                input: ["text"],
+                output: ["text"],
+            },
+            interleaved: {
+                field: "reasoning_content",
             },
         },
-    }, getOperationalDefaults(model));
+        matchedModelsDev: false,
+    };
 }
 function getDefaultReleaseDate(created) {
     if (!created || created <= 0) {
@@ -351,7 +248,7 @@ function mergeModelConfig(defaults, existing = {}) {
  * consecutive fetches return the same IDs) or the deadline is exceeded.
  * Transient fetch errors are retried within the deadline.
  */
-async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = 500, deadlineMs = 10_000, fetchTimeoutMs = 5_000, minFetchTimeoutMs = 2_000, previousModels = [], previousProviders = new Map(), } = {}) {
+async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = STARTUP_POLL_INTERVAL_MS, deadlineMs = STARTUP_MODEL_STABILIZATION_DEADLINE_MS, fetchTimeoutMs = STARTUP_FETCH_TIMEOUT_MS, minFetchTimeoutMs = STARTUP_MIN_FETCH_TIMEOUT_MS, previousModels = [], previousProviders = new Map(), } = {}) {
     const deadline = Date.now() + deadlineMs;
     let previousIds = previousModels.length > 0
         ? previousModels.map((model) => getModelProviderKey(model, previousProviders)).sort().join("\n")
@@ -394,7 +291,7 @@ async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = 5
     }
     return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
 }
-async function fetchApertureProviders(baseUrl, apiKey, logger, timeoutMs = 15_000) {
+async function fetchApertureProviders(baseUrl, apiKey, logger, timeoutMs = INTERACTIVE_FETCH_TIMEOUT_MS) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const url = `${baseUrl}/api/providers`;
@@ -420,7 +317,7 @@ async function fetchApertureProviders(baseUrl, apiKey, logger, timeoutMs = 15_00
         clearTimeout(timer);
     }
 }
-async function fetchApertureModels(baseUrl, apiKey, logger, timeoutMs = 15_000, providers = new Map()) {
+async function fetchApertureModels(baseUrl, apiKey, logger, timeoutMs = INTERACTIVE_FETCH_TIMEOUT_MS, providers = new Map()) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const url = `${baseUrl}/v1/models`;
@@ -468,7 +365,7 @@ async function readModelsDevCatalog(path, logger) {
         return undefined;
     }
 }
-async function fetchModelsDevCatalog(url, logger, timeoutMs = 10_000) {
+async function fetchModelsDevCatalog(url, logger, timeoutMs = MODELS_DEV_FETCH_TIMEOUT_MS) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const baseUrl = url.replace(/\/+$/, "");
@@ -711,8 +608,12 @@ export const TailscaleAperturePlugin = async (input, options) => {
     let modelsDevCatalog;
     let modelsLoaded = false;
     let modelLoadPromise;
+    const warnedModelsDevFallbacks = new Set();
     function formatError(error) {
         return error instanceof Error ? error.message : String(error);
+    }
+    function formatDuration(ms) {
+        return ms === undefined ? "unknown" : `${ms}ms`;
     }
     async function printErrorToChat(message) {
         try {
@@ -773,7 +674,7 @@ export const TailscaleAperturePlugin = async (input, options) => {
             const providerResult = await fetchApertureProviders(baseUrl, apiKey, logger);
             discoveredProviders = providerResult.providers;
             providerMetadataDegraded = providerResult.degraded;
-            discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger, 15_000, discoveredProviders);
+            discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger, INTERACTIVE_FETCH_TIMEOUT_MS, discoveredProviders);
             warnProviderMetadataDegraded();
             return discoveredModels;
         }
@@ -838,9 +739,15 @@ export const TailscaleAperturePlugin = async (input, options) => {
             };
             for (const model of models) {
                 const existingModel = modelsObj[model.id] ?? {};
+                const routeModelID = getApertureRouteModelID(model, discoveredProviders);
+                const modelDefaults = getModelDefaults(model, modelsDevCatalog, discoveredProviders);
+                if (!modelDefaults.matchedModelsDev && !warnedModelsDevFallbacks.has(routeModelID)) {
+                    warnedModelsDevFallbacks.add(routeModelID);
+                    logger.warn(`[TailscaleAperture] Model ${routeModelID} could not be matched to Models.dev specs; using conservative defaults`);
+                }
                 modelsObj[model.id] = {
-                    ...mergeModelConfig(getModelDefaults(model, modelsDevCatalog, discoveredProviders), existingModel),
-                    id: existingModel.id ?? getApertureRouteModelID(model, discoveredProviders),
+                    ...mergeModelConfig(modelDefaults.defaults, existingModel),
+                    id: existingModel.id ?? routeModelID,
                     name: existingModel.name ?? model.id,
                 };
             }
@@ -881,18 +788,42 @@ export const TailscaleAperturePlugin = async (input, options) => {
             throw error;
         }
     }
-    const startupModels = loadModelsOnStartup();
-    const startupModelsDevCatalog = loadModelsDevCatalog(modelsDevConfig, logger).then((catalog) => {
-        modelsDevCatalog = catalog;
-        if (catalog) {
-            logger.log(`[TailscaleAperture] Loaded Models.dev catalog with ${Object.keys(catalog).length} providers`);
+    const startupStartedAt = Date.now();
+    let startupModelsDurationMs;
+    let startupModelsDevDurationMs;
+    const startupModels = (async () => {
+        const startedAt = Date.now();
+        try {
+            return await loadModelsOnStartup();
         }
-        return catalog;
-    });
+        finally {
+            startupModelsDurationMs = Date.now() - startedAt;
+            logger.info(`[TailscaleAperture] Startup step Aperture model discovery finished in ${formatDuration(startupModelsDurationMs)}`);
+        }
+    })();
+    const startupModelsDevCatalog = (async () => {
+        const startedAt = Date.now();
+        try {
+            const catalog = await loadModelsDevCatalog(modelsDevConfig, logger);
+            modelsDevCatalog = catalog;
+            if (catalog) {
+                logger.log(`[TailscaleAperture] Loaded Models.dev catalog with ${Object.keys(catalog).length} providers`);
+            }
+            return catalog;
+        }
+        finally {
+            startupModelsDevDurationMs = Date.now() - startedAt;
+            logger.info(`[TailscaleAperture] Startup step Models.dev catalog load finished in ${formatDuration(startupModelsDevDurationMs)}`);
+        }
+    })();
     return {
         config: async (config) => {
+            const configWaitStartedAt = Date.now();
             try {
                 await Promise.all([startupModels, startupModelsDevCatalog]);
+                const configWaitDurationMs = Date.now() - configWaitStartedAt;
+                const startupDurationMs = Date.now() - startupStartedAt;
+                logger.info(`[TailscaleAperture] Startup finished in ${formatDuration(startupDurationMs)} (Aperture models: ${formatDuration(startupModelsDurationMs)}, Models.dev catalog: ${formatDuration(startupModelsDevDurationMs)}, config wait: ${formatDuration(configWaitDurationMs)})`);
                 mutateConfig(config);
             }
             catch (error) {
