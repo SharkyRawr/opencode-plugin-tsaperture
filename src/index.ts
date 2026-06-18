@@ -167,10 +167,6 @@ type ApertureProviderGroup = {
   wireAPI: ApertureWireAPI;
 };
 
-const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-  deepseek: "DeepSeek",
-};
-
 function slugifyProviderSegment(value: string): string {
   const normalized = value
     .trim()
@@ -183,18 +179,7 @@ function slugifyProviderSegment(value: string): string {
 
 function getProviderDisplayName(providerID: string): string {
   const slug = slugifyProviderSegment(providerID);
-  return PROVIDER_DISPLAY_NAMES[slug]
-    ?? (providerID.trim() || slug);
-}
-
-function inferProviderIDFromModel(model: ApertureModel): string | undefined {
-  const id = model.id.toLowerCase();
-
-  if (id.startsWith("deepseek-")) {
-    return "deepseek";
-  }
-
-  return undefined;
+  return providerID.trim() || slug;
 }
 
 function normalizeModelLookup(value: string): string {
@@ -272,9 +257,8 @@ function getProviderWireAPI(provider?: ApertureProviderMetadata): ApertureWireAP
 function getProviderGroup(model: ApertureModel, providers?: Map<string, ApertureProviderMetadata>): ApertureProviderGroup {
   const providerID = model.metadata?.provider?.id?.trim();
   const providerName = model.metadata?.provider?.name?.trim();
-  const inferredProviderID = inferProviderIDFromModel(model);
-  const providerSegment = providerName || providerID || inferredProviderID;
-  const routeProviderID = providerID || inferredProviderID || providerName;
+  const providerSegment = providerName || providerID;
+  const routeProviderID = providerID || providerName;
   const displayName = providerName || (providerSegment ? getProviderDisplayName(providerSegment) : undefined);
   const providerMetadata = routeProviderID ? providers?.get(routeProviderID) : undefined;
   const wireAPI = getProviderWireAPI(providerMetadata);
@@ -325,108 +309,6 @@ function getCatalogReasoningVariants(model: ModelsDevModel): Record<string, Reco
   ]));
 }
 
-function getReasoningVariants(model: ModelsDevModel, defaults: Omit<ApertureModelConfig, "id" | "name">): Record<string, Record<string, unknown>> | undefined {
-  const catalogVariants = getCatalogReasoningVariants(model);
-  if (catalogVariants && Object.keys(catalogVariants).length > 0) {
-    return catalogVariants;
-  }
-
-  if (!defaults.reasoning) {
-    return undefined;
-  }
-
-  const id = model.id.toLowerCase();
-  if (
-    id.includes("deepseek-chat") ||
-    id.includes("deepseek-reasoner") ||
-    id.includes("deepseek-r1") ||
-    id.includes("deepseek-v3") ||
-    id.includes("minimax") ||
-    id.includes("glm") ||
-    id.includes("kimi") ||
-    id.includes("k2p") ||
-    id.includes("qwen") ||
-    id.includes("big-pickle")
-  ) {
-    return undefined;
-  }
-
-  if (id.includes("grok") && id.includes("grok-3-mini")) {
-    return {
-      low: { reasoningEffort: "low" },
-      high: { reasoningEffort: "high" },
-    };
-  }
-  if (id.includes("grok")) {
-    return undefined;
-  }
-
-  if (id.includes("claude")) {
-    const output = defaults.limit?.output ?? 32_000;
-    return {
-      high: {
-        thinking: {
-          type: "enabled",
-          budgetTokens: Math.min(16_000, Math.floor(output / 2 - 1)),
-        },
-      },
-      max: {
-        thinking: {
-          type: "enabled",
-          budgetTokens: Math.min(31_999, output - 1),
-        },
-      },
-    };
-  }
-
-  if (id.includes("gemini")) {
-    if (id.includes("2.5")) {
-      return {
-        high: {
-          thinkingConfig: {
-            includeThoughts: true,
-            thinkingBudget: 16_000,
-          },
-        },
-        max: {
-          thinkingConfig: {
-            includeThoughts: true,
-            thinkingBudget: 24_576,
-          },
-        },
-      };
-    }
-
-    const levels = id.includes("3.1") ? ["low", "medium", "high"] : ["low", "high"];
-    return Object.fromEntries(levels.map((effort) => [
-      effort,
-      {
-        thinkingConfig: {
-          includeThoughts: true,
-          thinkingLevel: effort,
-        },
-      },
-    ]));
-  }
-
-  return Object.fromEntries(["low", "medium", "high"].map((effort) => [
-    effort,
-    { reasoningEffort: effort },
-  ]));
-}
-
-function isKimiModel(model: ApertureModel): boolean {
-  const id = model.id.toLowerCase();
-  const providerID = model.metadata?.provider?.id?.toLowerCase();
-  const providerName = model.metadata?.provider?.name?.toLowerCase();
-  return id.includes("kimi")
-    || id.includes("k2p")
-    || providerID === "kimi"
-    || providerID === "kimi-for-coding"
-    || providerName === "kimi"
-    || providerName === "kimi-for-coding";
-}
-
 function getModelsDevDefaults(entry: {
   provider: ModelsDevProvider;
   model: ModelsDevModel;
@@ -445,7 +327,7 @@ function getModelsDevDefaults(entry: {
     interleaved: entry.model.interleaved,
   };
 
-  const variants = getReasoningVariants(entry.model, defaults);
+  const variants = getCatalogReasoningVariants(entry.model);
   if (variants && Object.keys(variants).length > 0) {
     defaults.variants = variants;
   }
@@ -453,14 +335,6 @@ function getModelsDevDefaults(entry: {
   return Object.fromEntries(
     Object.entries(defaults).filter(([, value]) => value !== undefined),
   ) as Omit<ApertureModelConfig, "id" | "name">;
-}
-
-function getOperationalDefaults(model: ApertureModel): Omit<ApertureModelConfig, "id" | "name"> {
-  return isKimiModel(model) ? {
-    headers: {
-      "User-Agent": "KimiCLI/1.3",
-    },
-  } : {};
 }
 
 function getModelDefaults(
@@ -472,10 +346,10 @@ function getModelDefaults(
   const apertureProvider = routeProviderID ? providers?.get(routeProviderID) : undefined;
   const modelsDevEntry = findModelsDevEntry(model, catalog, apertureProvider);
   if (modelsDevEntry) {
-    return mergeModelConfig(getModelsDevDefaults(modelsDevEntry), getOperationalDefaults(model));
+    return getModelsDevDefaults(modelsDevEntry);
   }
 
-  return mergeModelConfig({
+  return {
     limit: {
       context: 128_000,
       output: 8_192,
@@ -490,12 +364,7 @@ function getModelDefaults(
     interleaved: {
       field: "reasoning_content",
     },
-    options: {
-      thinking: {
-        type: "enabled",
-      },
-    },
-  }, getOperationalDefaults(model));
+  };
 }
 
 function getDefaultReleaseDate(created?: number): string {
