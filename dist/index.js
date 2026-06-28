@@ -94,6 +94,7 @@ function getProviderGroup(model, providers) {
             id: "aperture",
             name: "Aperture",
             wireAPI,
+            compatibility: providerMetadata?.compatibility,
         };
     }
     return {
@@ -101,6 +102,7 @@ function getProviderGroup(model, providers) {
         name: `Aperture/${displayName}`,
         routeProviderID,
         wireAPI,
+        compatibility: providerMetadata?.compatibility,
     };
 }
 function getModelProviderKey(model, providers) {
@@ -111,7 +113,21 @@ function getApertureRouteModelID(model, providers) {
     const routeProviderID = getProviderGroup(model, providers).routeProviderID;
     return routeProviderID ? `${routeProviderID}/${model.id}` : model.id;
 }
-function getProviderNpmPackage(wireAPI) {
+const PROTOCOL_NPM = {
+    openai_chat: "@ai-sdk/openai-compatible",
+    openai_responses: "@ai-sdk/openai",
+    anthropic_messages: "@ai-sdk/anthropic",
+    gemini_generate_content: "@ai-sdk/google",
+    google_generate_content: "@ai-sdk/google",
+    google_raw_predict: "@ai-sdk/google",
+    bedrock_converse: "@ai-sdk/amazon-bedrock",
+    bedrock_model_invoke: "@ai-sdk/amazon-bedrock",
+};
+function getProviderNpmPackage(wireAPI, compatibility) {
+    for (const [key, pkg] of Object.entries(PROTOCOL_NPM)) {
+        if (compatibility?.[key])
+            return pkg;
+    }
     return wireAPI === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible";
 }
 function getCatalogReasoningVariants(model) {
@@ -722,17 +738,18 @@ export const TailscaleAperturePlugin = async (input, options) => {
             const modelsObj = {
                 ...(existingProvider.models ?? {}),
             };
+            const npm = existingProvider.npm
+                ?? (group.wireAPI === "openai" ? baseProvider.npm : undefined)
+                ?? getProviderNpmPackage(group.wireAPI, group.compatibility);
             config.provider[group.id] = {
                 ...baseProvider,
                 ...existingProvider,
-                npm: existingProvider.npm
-                    ?? (group.wireAPI === "openai" ? baseProvider.npm : undefined)
-                    ?? getProviderNpmPackage(group.wireAPI),
+                npm,
                 name: existingProvider.name ?? group.name,
                 options: {
                     ...baseProvider.options,
                     ...existingProvider.options,
-                    baseURL: `${baseUrl}/v1`,
+                    baseURL: baseUrl,
                     apiKey: existingProvider.options?.apiKey ?? baseProvider.options?.apiKey ?? apiKey,
                 },
                 models: modelsObj,
