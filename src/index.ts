@@ -340,7 +340,7 @@ function getModelsDevDefaults(entry: {
   };
 
   const variants = getCatalogReasoningVariants(entry.model);
-  if (variants && Object.keys(variants).length > 0) {
+  if (variants) {
     defaults.variants = variants;
   }
 
@@ -383,14 +383,6 @@ function getModelDefaults(
     },
     matchedModelsDev: false,
   };
-}
-
-function getDefaultReleaseDate(created?: number): string {
-  if (!created || created <= 0) {
-    return "";
-  }
-
-  return new Date(created * 1000).toISOString().slice(0, 10);
 }
 
 function mergeThinkingConfig(defaults?: ThinkingConfig, existing?: ThinkingConfig): ThinkingConfig | undefined {
@@ -704,57 +696,23 @@ async function loadApertureConfig(logger: Logger): Promise<ApertureConfig> {
 export const TailscaleAperturePlugin: Plugin = async (input, options) => {
   const client = input.client;
 
+  function writeLog(level: "debug" | "info" | "warn" | "error", message: string, args: unknown[]): void {
+    client.app.log({
+      body: {
+        service: "TailscaleAperture",
+        level,
+        message,
+        extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
+      },
+    }).catch(() => {});
+  }
+
   const logger: Logger = {
-    log: (message: string, ...args: unknown[]) => {
-      client.app.log({
-        body: {
-          service: "TailscaleAperture",
-          level: "info",
-          message,
-          extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-        },
-      }).catch(() => {});
-    },
-    warn: (message: string, ...args: unknown[]) => {
-      client.app.log({
-        body: {
-          service: "TailscaleAperture",
-          level: "warn",
-          message,
-          extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-        },
-      }).catch(() => {});
-    },
-    error: (message: string, ...args: unknown[]) => {
-      client.app.log({
-        body: {
-          service: "TailscaleAperture",
-          level: "error",
-          message,
-          extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-        },
-      }).catch(() => {});
-    },
-    info: (message: string, ...args: unknown[]) => {
-      client.app.log({
-        body: {
-          service: "TailscaleAperture",
-          level: "info",
-          message,
-          extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-        },
-      }).catch(() => {});
-    },
-    debug: (message: string, ...args: unknown[]) => {
-      client.app.log({
-        body: {
-          service: "TailscaleAperture",
-          level: "debug",
-          message,
-          extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-        },
-      }).catch(() => {});
-    },
+    log: (message, ...args) => writeLog("info", message, args),
+    info: (message, ...args) => writeLog("info", message, args),
+    warn: (message, ...args) => writeLog("warn", message, args),
+    error: (message, ...args) => writeLog("error", message, args),
+    debug: (message, ...args) => writeLog("debug", message, args),
   };
 
   const require = createRequire(import.meta.url);

@@ -142,7 +142,7 @@ function getModelsDevDefaults(entry) {
         interleaved: entry.model.interleaved,
     };
     const variants = getCatalogReasoningVariants(entry.model);
-    if (variants && Object.keys(variants).length > 0) {
+    if (variants) {
         defaults.variants = variants;
     }
     return Object.fromEntries(Object.entries(defaults).filter(([, value]) => value !== undefined));
@@ -176,12 +176,6 @@ function getModelDefaults(model, catalog, providers) {
         },
         matchedModelsDev: false,
     };
-}
-function getDefaultReleaseDate(created) {
-    if (!created || created <= 0) {
-        return "";
-    }
-    return new Date(created * 1000).toISOString().slice(0, 10);
 }
 function mergeThinkingConfig(defaults, existing) {
     if (!defaults && !existing) {
@@ -443,57 +437,22 @@ async function loadApertureConfig(logger) {
 }
 export const TailscaleAperturePlugin = async (input, options) => {
     const client = input.client;
+    function writeLog(level, message, args) {
+        client.app.log({
+            body: {
+                service: "TailscaleAperture",
+                level,
+                message,
+                extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
+            },
+        }).catch(() => { });
+    }
     const logger = {
-        log: (message, ...args) => {
-            client.app.log({
-                body: {
-                    service: "TailscaleAperture",
-                    level: "info",
-                    message,
-                    extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-                },
-            }).catch(() => { });
-        },
-        warn: (message, ...args) => {
-            client.app.log({
-                body: {
-                    service: "TailscaleAperture",
-                    level: "warn",
-                    message,
-                    extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-                },
-            }).catch(() => { });
-        },
-        error: (message, ...args) => {
-            client.app.log({
-                body: {
-                    service: "TailscaleAperture",
-                    level: "error",
-                    message,
-                    extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-                },
-            }).catch(() => { });
-        },
-        info: (message, ...args) => {
-            client.app.log({
-                body: {
-                    service: "TailscaleAperture",
-                    level: "info",
-                    message,
-                    extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-                },
-            }).catch(() => { });
-        },
-        debug: (message, ...args) => {
-            client.app.log({
-                body: {
-                    service: "TailscaleAperture",
-                    level: "debug",
-                    message,
-                    extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-                },
-            }).catch(() => { });
-        },
+        log: (message, ...args) => writeLog("info", message, args),
+        info: (message, ...args) => writeLog("info", message, args),
+        warn: (message, ...args) => writeLog("warn", message, args),
+        error: (message, ...args) => writeLog("error", message, args),
+        debug: (message, ...args) => writeLog("debug", message, args),
     };
     const require = createRequire(import.meta.url);
     const pkg = require("../package.json");
