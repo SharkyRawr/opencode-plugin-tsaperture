@@ -55,7 +55,7 @@ Contents:
 
 ### API compatibility
 
-The plugin reads Aperture provider compatibility metadata and registers each provider with the matching OpenCode provider package. It supports both OpenAI-compatible chat providers and Anthropic Messages API providers, including Aperture routes where the same model is only available through one API flavor.
+The plugin reads Aperture provider compatibility metadata and registers each provider with the matching OpenCode provider package and endpoint. It supports OpenAI Responses and Chat Completions, Anthropic Messages, Google Vertex, Amazon Bedrock, and Gemini Generate Content routes.
 
 ### Models.dev enrichment
 

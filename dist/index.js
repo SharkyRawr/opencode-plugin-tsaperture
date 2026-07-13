@@ -71,15 +71,20 @@ function findModelsDevEntry(model, catalog, apertureProvider) {
     }
     return exactMatches.length === 1 ? exactMatches[0] : undefined;
 }
-function getProviderWireAPI(provider) {
-    const compatibility = provider?.compatibility;
-    if (compatibility?.openai_chat || compatibility?.openai_responses) {
-        return "openai";
-    }
-    if (compatibility?.anthropic_messages) {
-        return "anthropic";
-    }
-    return "openai";
+function getApertureProtocol(compatibility) {
+    if (compatibility?.openai_responses)
+        return "openai_responses";
+    if (compatibility?.anthropic_messages)
+        return "anthropic_messages";
+    if (compatibility?.openai_chat)
+        return "openai_chat";
+    if (compatibility?.google_generate_content || compatibility?.google_raw_predict)
+        return "google_vertex";
+    if (compatibility?.bedrock_model_invoke || compatibility?.bedrock_converse)
+        return "bedrock";
+    if (compatibility?.gemini_generate_content)
+        return "gemini_generate_content";
+    return "openai_chat";
 }
 function getProviderGroup(model, providers) {
     const providerID = model.metadata?.provider?.id?.trim();
@@ -88,31 +93,63 @@ function getProviderGroup(model, providers) {
     const routeProviderID = providerID || providerName;
     const displayName = providerName || (providerSegment ? getProviderDisplayName(providerSegment) : undefined);
     const providerMetadata = routeProviderID ? providers?.get(routeProviderID) : undefined;
-    const wireAPI = getProviderWireAPI(providerMetadata);
+    const protocol = getApertureProtocol(providerMetadata?.compatibility);
     if (!providerSegment || !displayName) {
         return {
             id: "aperture",
             name: "Aperture",
-            wireAPI,
+            protocol,
         };
     }
     return {
         id: `aperture-${slugifyProviderSegment(providerSegment)}`,
         name: `Aperture/${displayName}`,
         routeProviderID,
-        wireAPI,
+        protocol,
     };
 }
 function getModelProviderKey(model, providers) {
     const group = getProviderGroup(model, providers);
-    return `${group.id}:${group.wireAPI}:${model.id}`;
+    return `${group.id}:${group.protocol}:${model.id}`;
 }
 function getApertureRouteModelID(model, providers) {
     const routeProviderID = getProviderGroup(model, providers).routeProviderID;
     return routeProviderID ? `${routeProviderID}/${model.id}` : model.id;
 }
-function getProviderNpmPackage(wireAPI) {
-    return wireAPI === "anthropic" ? "@ai-sdk/anthropic" : "@ai-sdk/openai-compatible";
+function getProviderSDKConfig(protocol, baseUrl, apiKey) {
+    const key = apiKey || "not-required";
+    switch (protocol) {
+        case "openai_responses":
+            return { npm: "@ai-sdk/openai", options: { baseURL: `${baseUrl}/v1`, apiKey: key } };
+        case "anthropic_messages":
+            return { npm: "@ai-sdk/anthropic", options: { baseURL: `${baseUrl}/v1`, apiKey: key } };
+        case "openai_chat":
+            return { npm: "@ai-sdk/openai-compatible", options: { baseURL: `${baseUrl}/v1`, apiKey: key } };
+        case "google_vertex":
+            // apiKey selects Vertex express mode; Aperture rewrites the placeholder project and region.
+            return {
+                npm: "@ai-sdk/google-vertex",
+                options: {
+                    baseURL: `${baseUrl}/v1/projects/_aperture_auto_vertex_project_id_/locations/_aperture_auto_vertex_region_/publishers/google`,
+                    apiKey: key,
+                },
+            };
+        case "bedrock":
+            // Generated provider IDs bypass OpenCode's built-in Bedrock loader, so configure the SDK directly.
+            return {
+                npm: "@ai-sdk/amazon-bedrock",
+                options: apiKey
+                    ? { baseURL: `${baseUrl}/bedrock`, region: "us-east-1", apiKey }
+                    : {
+                        baseURL: `${baseUrl}/bedrock`,
+                        region: "us-east-1",
+                        accessKeyId: "not-needed",
+                        secretAccessKey: "not-needed",
+                    },
+            };
+        case "gemini_generate_content":
+            return { npm: "@ai-sdk/google", options: { baseURL: `${baseUrl}/v1beta`, apiKey: key } };
+    }
 }
 function getCatalogReasoningVariants(model) {
     const effort = model.reasoning_options?.find((option) => option.type === "effort");
@@ -681,18 +718,19 @@ export const TailscaleAperturePlugin = async (input, options) => {
             const modelsObj = {
                 ...(existingProvider.models ?? {}),
             };
+            const configuredApiKey = existingProvider.options?.apiKey ?? baseProvider.options?.apiKey ?? apiKey;
+            const sdk = getProviderSDKConfig(group.protocol, baseUrl, typeof configuredApiKey === "string" ? configuredApiKey : apiKey);
             config.provider[group.id] = {
                 ...baseProvider,
                 ...existingProvider,
                 npm: existingProvider.npm
-                    ?? (group.wireAPI === "openai" ? baseProvider.npm : undefined)
-                    ?? getProviderNpmPackage(group.wireAPI),
+                    ?? (group.protocol === "openai_chat" || group.protocol === "openai_responses" ? baseProvider.npm : undefined)
+                    ?? sdk.npm,
                 name: existingProvider.name ?? group.name,
                 options: {
                     ...baseProvider.options,
                     ...existingProvider.options,
-                    baseURL: `${baseUrl}/v1`,
-                    apiKey: existingProvider.options?.apiKey ?? baseProvider.options?.apiKey ?? apiKey,
+                    ...sdk.options,
                 },
                 models: modelsObj,
             };
