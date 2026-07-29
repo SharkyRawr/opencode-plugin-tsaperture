@@ -244,17 +244,51 @@ function findModelsDevEntry(
     }
   }
 
-  const exactMatches: Array<{ provider: ModelsDevProvider; model: ModelsDevModel }> = [];
-  for (const provider of Object.values(catalog)) {
-    for (const key of modelKeys) {
-      const candidate = provider.models[key];
-      if (candidate) {
-        exactMatches.push({ provider, model: candidate });
+  if (!provider && apertureProviderID) {
+    const normalizedApertureID = normalizeModelLookup(apertureProviderID);
+    for (const [catalogKey, catalogProvider] of Object.entries(catalog)) {
+      const normalizedCatalogKey = normalizeModelLookup(catalogKey);
+      if (normalizedCatalogKey && (normalizedApertureID.includes(normalizedCatalogKey) || normalizedCatalogKey.includes(normalizedApertureID))) {
+        const candidate = findProviderModel(catalogProvider, modelKeys);
+        if (candidate) {
+          return { provider: catalogProvider, model: candidate };
+        }
       }
     }
   }
 
-  return exactMatches.length === 1 ? exactMatches[0] : undefined;
+  const exactMatches: Array<{ provider: ModelsDevProvider; model: ModelsDevModel; catalogKey: string }> = [];
+  for (const [catalogKey, catalogProvider] of Object.entries(catalog)) {
+    for (const key of modelKeys) {
+      const candidate = catalogProvider.models[key];
+      if (candidate) {
+        exactMatches.push({ provider: catalogProvider, model: candidate, catalogKey });
+      }
+    }
+  }
+
+  if (exactMatches.length === 1) {
+    return exactMatches[0];
+  }
+
+  if (exactMatches.length > 1 && apertureProviderID) {
+    const normalizedApertureID = normalizeModelLookup(apertureProviderID);
+    const scored = exactMatches.map(m => {
+      const nk = normalizeModelLookup(m.catalogKey);
+      let score = nk && normalizedApertureID.includes(nk) ? 2 : 0;
+      const apertureSegments = normalizedApertureID.split("-");
+      const catalogSegments = nk ? nk.split("-") : [];
+      const overlap = catalogSegments.filter(s => apertureSegments.includes(s)).length;
+      score += overlap;
+      return { ...m, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    if (scored[0].score > 0) {
+      return scored[0];
+    }
+  }
+
+  return undefined;
 }
 
 function getApertureProtocol(compatibility?: ApertureProviderCompatibility): ApertureProtocol {
