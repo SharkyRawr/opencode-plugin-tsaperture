@@ -53,7 +53,10 @@ function findModelsDevEntry(model, catalog, apertureProvider) {
         normalizeModelLookup(model.id),
     ]);
     const apertureProviderID = apertureProvider?.id ?? model.metadata?.provider?.id;
-    const provider = apertureProviderID ? catalog[apertureProviderID] ?? catalog[apertureProviderID.toLowerCase()] : undefined;
+    const modelsDevProviderID = apertureProviderID?.split("-x-", 1)[0];
+    const provider = modelsDevProviderID
+        ? catalog[modelsDevProviderID] ?? catalog[modelsDevProviderID.toLowerCase()]
+        : undefined;
     if (provider) {
         const candidate = findProviderModel(provider, modelKeys);
         if (candidate) {
