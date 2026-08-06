@@ -49,7 +49,6 @@ test("merges model configurations from models.dev catalog", async () => {
       client: {
         app: { log: async () => ({}) },
         tui: { showToast: async () => ({}) },
-        session: { list: async () => ({ data: [] }) },
       },
     }, {
       baseUrl: "https://aperture.example",
@@ -124,7 +123,6 @@ test("uses the base provider for -x- Aperture variants", async () => {
       client: {
         app: { log: async () => ({}) },
         tui: { showToast: async () => ({}) },
-        session: { list: async () => ({ data: [] }) },
       },
     }, {
       baseUrl: "https://aperture.example",

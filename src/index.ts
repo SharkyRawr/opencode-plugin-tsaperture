@@ -21,11 +21,7 @@ interface ApertureModel {
 }
 
 interface ApertureResponse {
-  object: string;
   data?: ApertureModel[];
-  models?: Array<ApertureModel & {
-    model?: string;
-  }>;
 }
 
 type ApertureProviderCompatibility = Record<string, boolean | undefined>;
@@ -99,17 +95,7 @@ type ApertureModelConfig = {
   variants?: Record<string, Record<string, unknown>>;
 };
 
-type ThinkingConfig = {
-  type?: string;
-};
-
 type ToastVariant = "success" | "error";
-
-type PendingToast = {
-  variant: ToastVariant;
-  message: string;
-  attempts: number;
-};
 
 type ModelsDevModel = {
   id: string;
@@ -275,21 +261,20 @@ function getProviderGroup(model: ApertureModel, providers?: Map<string, Aperture
   const providerName = model.metadata?.provider?.name?.trim();
   const providerSegment = providerName || providerID;
   const routeProviderID = providerID || providerName;
-  const displayName = providerName || (providerSegment ? getProviderDisplayName(providerSegment) : undefined);
-  const providerMetadata = routeProviderID ? providers?.get(routeProviderID) : undefined;
-  const protocol = getApertureProtocol(providerMetadata?.compatibility);
 
-  if (!providerSegment || !displayName) {
+  if (!providerSegment || !routeProviderID) {
     return {
       id: "aperture",
       name: "Aperture",
-      protocol,
+      protocol: "openai_chat",
     };
   }
 
+  const protocol = getApertureProtocol(providers?.get(routeProviderID)?.compatibility);
+
   return {
     id: `aperture-${slugifyProviderSegment(providerSegment)}`,
-    name: `Aperture/${displayName}`,
+    name: `Aperture/${providerName || getProviderDisplayName(providerSegment)}`,
     routeProviderID,
     protocol,
   };
@@ -424,22 +409,8 @@ function getModelDefaults(
   };
 }
 
-function mergeThinkingConfig(defaults?: ThinkingConfig, existing?: ThinkingConfig): ThinkingConfig | undefined {
-  if (!defaults && !existing) {
-    return undefined;
-  }
-
-  return {
-    ...defaults,
-    ...existing,
-  };
-}
-
+// ponytail: defaults never set options/headers, so only limit/modalities/cost/interleaved need merging
 function mergeModelConfig(defaults: Omit<ApertureModelConfig, "id" | "name">, existing: ApertureModelConfig = {}): ApertureModelConfig {
-  const thinking = mergeThinkingConfig(
-    defaults.options?.thinking as ThinkingConfig | undefined,
-    existing.options?.thinking as ThinkingConfig | undefined,
-  );
   const limit = defaults.limit || existing.limit ? {
     context: existing.limit?.context ?? defaults.limit?.context ?? 0,
     input: existing.limit?.input ?? defaults.limit?.input,
@@ -468,19 +439,6 @@ function mergeModelConfig(defaults: Omit<ApertureModelConfig, "id" | "name">, ex
     ...(modalities ? { modalities } : {}),
     ...(defaults.interleaved || existing.interleaved ? {
       interleaved: existing.interleaved ?? defaults.interleaved,
-    } : {}),
-    ...(defaults.options || existing.options ? {
-      options: {
-        ...defaults.options,
-        ...existing.options,
-        ...(thinking ? { thinking } : {}),
-      },
-    } : {}),
-    ...(defaults.headers || existing.headers ? {
-      headers: {
-        ...defaults.headers,
-        ...existing.headers,
-      },
     } : {}),
     ...(defaults.variants || existing.variants ? {
       variants: {
@@ -608,19 +566,10 @@ async function fetchApertureModels(
     }
 
     const data = await response.json() as ApertureResponse;
-    const openAIModels = data.data ?? [];
-    const llamaCppModels = (data.models ?? []).map((model) => ({
-      ...model,
-      id: model.id || model.model || "",
-      object: model.object || "model",
-      created: model.created || 0,
-      owned_by: model.owned_by || "unknown",
-    }));
-    const mergedModels = [...openAIModels, ...llamaCppModels]
-      .filter((model) => model.id);
-
     return Array.from(
-      new Map(mergedModels.map((model) => [getModelProviderKey(model, providers), model])).values(),
+      new Map((data.data ?? [])
+        .filter((model) => model.id)
+        .map((model) => [getModelProviderKey(model, providers), model])).values(),
     );
   } catch (error) {
     if (!(error instanceof Error && error.message.startsWith("Failed to fetch models:"))) {
@@ -708,7 +657,6 @@ function getOpenCodeConfigDirs(): string[] {
 }
 
 type Logger = {
-  log: (message: string, ...args: unknown[]) => void;
   warn: (message: string, ...args: unknown[]) => void;
   error: (message: string, ...args: unknown[]) => void;
   info: (message: string, ...args: unknown[]) => void;
@@ -720,7 +668,7 @@ async function loadApertureConfig(logger: Logger): Promise<ApertureConfig> {
     const configPath = join(configDir, "aperture.json");
     try {
       const content = await readFile(configPath, "utf-8");
-      logger.log(`[TailscaleAperture] Loaded config from ${configPath}`);
+      logger.info(`[TailscaleAperture] Loaded config from ${configPath}`);
       return JSON.parse(content) as ApertureConfig;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -747,7 +695,6 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
   }
 
   const logger: Logger = {
-    log: (message, ...args) => writeLog("info", message, args),
     info: (message, ...args) => writeLog("info", message, args),
     warn: (message, ...args) => writeLog("warn", message, args),
     error: (message, ...args) => writeLog("error", message, args),
@@ -756,91 +703,43 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
 
   const require = createRequire(import.meta.url);
   const pkg = require("../package.json") as { name: string; version: string };
-  logger.log(`[TailscaleAperture] ${pkg.name} v${pkg.version}`);
+  logger.info(`[TailscaleAperture] ${pkg.name} v${pkg.version}`);
 
-  const pendingToasts: PendingToast[] = [];
+  const pendingToasts: Array<{ variant: ToastVariant; message: string }> = [];
   let tuiReady = false;
-  let toastFlushTimer: ReturnType<typeof setTimeout> | undefined;
 
-  async function sendToast(toast: PendingToast): Promise<void> {
-    const result = await client.tui.showToast({
-      body: {
-        title: "Tailscale Aperture",
-        message: toast.message,
-        variant: toast.variant,
-        duration: 10_000,
-      },
-      query: {
-        directory: input.directory,
-      },
-    });
-    if (result.error) {
-      throw new Error(`Failed to show opencode toast: ${JSON.stringify(result.error)}`);
-    }
-  }
-
-  function scheduleToastFlush(): void {
-    if (!tuiReady || toastFlushTimer) {
+  async function flushToasts(): Promise<void> {
+    if (!tuiReady) {
       return;
     }
 
-    toastFlushTimer = setTimeout(() => {
-      toastFlushTimer = undefined;
-      flushToastQueue().catch((error) => {
-        logger.warn("[TailscaleAperture] Failed to flush queued toasts:", error);
+    let toast: { variant: ToastVariant; message: string } | undefined;
+    while ((toast = pendingToasts.shift())) {
+      const result = await client.tui.showToast({
+        body: {
+          title: "Tailscale Aperture",
+          message: toast.message,
+          variant: toast.variant,
+          duration: 10_000,
+        },
+        query: {
+          directory: input.directory,
+        },
       });
-    }, 1_000);
-    toastFlushTimer.unref?.();
-  }
-
-  async function flushToastQueue(): Promise<void> {
-    if (!tuiReady || pendingToasts.length === 0) {
-      return;
-    }
-
-    const toasts = pendingToasts.splice(0, pendingToasts.length);
-    for (const toast of toasts) {
-      try {
-        await sendToast(toast);
-      } catch (error) {
-        logger.warn("[TailscaleAperture] Failed to show opencode toast:", error);
-        if (toast.attempts < 5) {
-          pendingToasts.push({
-            ...toast,
-            attempts: toast.attempts + 1,
-          });
-        }
+      if (result.error) {
+        logger.warn(`[TailscaleAperture] Failed to show opencode toast: ${JSON.stringify(result.error)}`);
       }
-    }
-
-    if (pendingToasts.length > 0) {
-      scheduleToastFlush();
     }
   }
 
   function showMessage(variant: ToastVariant, message: string): void {
-    if (pendingToasts.some((toast) => toast.variant === variant && toast.message === message)) {
-      return;
-    }
-
-    pendingToasts.push({
-      variant,
-      message,
-      attempts: 0,
-    });
-
-    if (tuiReady) {
-      flushToastQueue().catch((error) => {
-        logger.warn("[TailscaleAperture] Failed to flush queued toasts:", error);
-      });
-    }
+    pendingToasts.push({ variant, message });
+    void flushToasts();
   }
 
   function markTuiReady(): void {
     tuiReady = true;
-    flushToastQueue().catch((error) => {
-      logger.warn("[TailscaleAperture] Failed to flush queued toasts:", error);
-    });
+    void flushToasts();
   }
 
   const fileConfig = await loadApertureConfig(logger);
@@ -889,49 +788,6 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
 
   function formatDuration(ms: number | undefined): string {
     return ms === undefined ? "unknown" : `${ms}ms`;
-  }
-
-  async function printErrorToChat(message: string): Promise<void> {
-    try {
-      const sessionsResult = await client.session.list({
-        query: {
-          directory: input.directory,
-        },
-      });
-      if (sessionsResult.error) {
-        throw new Error(`Failed to list opencode sessions: ${JSON.stringify(sessionsResult.error)}`);
-      }
-
-      const session = sessionsResult.data
-        ?.filter((candidate) => candidate.directory === input.directory)
-        .sort((a, b) => b.time.updated - a.time.updated)[0];
-      if (!session) {
-        logger.warn("[TailscaleAperture] Failed to print error to chat: no opencode session found");
-        return;
-      }
-
-      const promptResult = await client.session.promptAsync({
-        path: {
-          id: session.id,
-        },
-        query: {
-          directory: input.directory,
-        },
-        body: {
-          noReply: true,
-          parts: [{
-            type: "text",
-            text: message,
-            synthetic: true,
-          }],
-        },
-      });
-      if (promptResult.error) {
-        throw new Error(`Failed to print error to chat: ${JSON.stringify(promptResult.error)}`);
-      }
-    } catch (error) {
-      logger.warn("[TailscaleAperture] Failed to print error to chat:", error);
-    }
   }
 
   function warnProviderMetadataDegraded(): void {
@@ -1075,16 +931,15 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
         return discoveredModels;
       }
 
-      logger.log(`[TailscaleAperture] Discovered ${discoveredModels.length} models from ${baseUrl}`);
+      logger.info(`[TailscaleAperture] Discovered ${discoveredModels.length} models from ${baseUrl}`);
       const providerGroupCount = countProviderGroups(discoveredModels);
-      logger.log(`[TailscaleAperture] Registered ${providerGroupCount} Aperture provider groups for ${discoveredModels.length} discovered models`);
+      logger.info(`[TailscaleAperture] Registered ${providerGroupCount} Aperture provider groups for ${discoveredModels.length} discovered models`);
       showMessage("success", `Registered ${discoveredModels.length} Aperture models across ${providerGroupCount} provider groups`);
       return discoveredModels;
     } catch (error) {
       const errmsg = formatError(error);
       logger.error("[TailscaleAperture] Failed to register models:", error);
       showMessage("error", errmsg);
-      await printErrorToChat(errmsg);
       throw error;
     }
   }
@@ -1109,7 +964,7 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       const catalog = await loadModelsDevCatalog(modelsDevConfig, logger);
       modelsDevCatalog = catalog;
       if (catalog) {
-        logger.log(`[TailscaleAperture] Loaded Models.dev catalog with ${Object.keys(catalog).length} providers`);
+        logger.info(`[TailscaleAperture] Loaded Models.dev catalog with ${Object.keys(catalog).length} providers`);
       }
       return catalog;
     } finally {

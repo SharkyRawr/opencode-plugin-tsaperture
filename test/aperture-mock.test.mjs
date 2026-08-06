@@ -42,7 +42,6 @@ test("processes real mock data from local llm correctly", async () => {
       client: {
         app: { log: async () => ({}) },
         tui: { showToast: async () => ({}) },
-        session: { list: async () => ({ data: [] }) },
       },
     }, {
       baseUrl: "https://aperture.example",

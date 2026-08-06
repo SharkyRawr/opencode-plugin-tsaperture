@@ -45,7 +45,6 @@ test("maps every Aperture protocol to its AI SDK configuration", async () => {
         client: {
           app: { log: async () => ({}) },
           tui: { showToast: async () => ({}) },
-          session: { list: async () => ({ data: [] }) },
         },
       }, {
         baseUrl: `https://${name}.example`,
