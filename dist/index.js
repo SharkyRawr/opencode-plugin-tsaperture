@@ -291,7 +291,7 @@ async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = S
             lastError = error;
             // Transient error — retry until deadline.
         }
-        if (Date.now() + pollIntervalMs >= deadline) {
+        if (Date.now() + pollIntervalMs >= deadline && lastGoodResult.length > 0) {
             return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
         }
         await new Promise((r) => setTimeout(r, pollIntervalMs));
