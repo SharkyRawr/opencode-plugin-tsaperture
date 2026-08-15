@@ -23,7 +23,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "pnpm build && node --test test/*.test.mjs",
+    "test": "pnpm build && node --experimental-test-coverage --test test/*.test.mjs",
     "watch": "tsc --watch"
   },
   "keywords": [

@@ -75,6 +75,77 @@ test("merges model configurations from models.dev catalog", async () => {
   }
 });
 
+test("maps models.dev reasoning_options effort values to variants", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+
+    if (url.hostname === "models.dev" && url.pathname === "/api.json") {
+      return Response.json({
+        "test-provider": {
+          id: "test-provider",
+          name: "Test Provider",
+          models: {
+            "reasoning-model": {
+              id: "reasoning-model",
+              name: "Reasoning Model",
+              reasoning: true,
+              reasoning_options: [
+                { type: "effort", values: [" low ", "high", "", "  "] },
+                { type: "toggle" },
+              ],
+            },
+          },
+        },
+      });
+    }
+
+    if (url.hostname === "aperture.example") {
+      if (url.pathname === "/api/providers") {
+        return Response.json([
+          { id: "test-provider", name: "Test Provider", compatibility: { openai_chat: true } },
+        ]);
+      }
+      if (url.pathname === "/v1/models") {
+        return Response.json({
+          data: [
+            { id: "reasoning-model", object: "model", created: 0, owned_by: "test-provider", metadata: { provider: { id: "test-provider", name: "Test Provider" } } },
+          ],
+        });
+      }
+    }
+
+    assert.fail(`unexpected fetch: ${url.toString()}`);
+  };
+
+  try {
+    const plugin = await TailscaleAperturePlugin({
+      directory: "/tmp",
+      client: {
+        app: { log: async () => ({}) },
+        tui: { showToast: async () => ({}) },
+      },
+    }, {
+      baseUrl: "https://aperture.example",
+      modelsDevUrl: "https://models.dev",
+    });
+
+    const config = {};
+    await plugin.config(config);
+
+    const model = config.provider["aperture-test-provider"].models["reasoning-model"];
+    assert.equal(model.reasoning, true);
+    // Values are trimmed, blank/whitespace-only values dropped; non-effort
+    // option types ignored.
+    assert.deepEqual(model.variants, {
+      low: { reasoningEffort: "low" },
+      high: { reasoningEffort: "high" },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("uses the base provider for -x- Aperture variants", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {

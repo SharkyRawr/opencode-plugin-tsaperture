@@ -68,3 +68,50 @@ test("maps every Aperture protocol to its AI SDK configuration", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("passes the apiKey through to the Bedrock SDK when configured", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    assert.equal(url.hostname, "bedrock.example");
+
+    if (url.pathname === "/api/providers") {
+      return Response.json([{ id: "bedrock", name: "bedrock", models: ["model"], compatibility: { bedrock_converse: true } }]);
+    }
+    if (url.pathname === "/v1/models") {
+      return Response.json({
+        data: [{
+          id: "model",
+          object: "model",
+          created: 0,
+          owned_by: "bedrock",
+          metadata: { provider: { id: "bedrock", name: "bedrock" } },
+        }],
+      });
+    }
+    assert.fail(`unexpected path ${url.pathname}`);
+  };
+
+  try {
+    const plugin = await TailscaleAperturePlugin({
+      directory: "/tmp",
+      client: {
+        app: { log: async () => ({}) },
+        tui: { showToast: async () => ({}) },
+      },
+    }, {
+      baseUrl: "https://bedrock.example",
+      apiKey: "test-key",
+      disableModelsDev: true,
+    });
+    const config = {};
+    await plugin.config(config);
+
+    const options = config.provider["aperture-bedrock"].options;
+    assert.equal(options.apiKey, "test-key");
+    assert.equal(options.accessKeyId, undefined);
+    assert.equal(options.secretAccessKey, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
