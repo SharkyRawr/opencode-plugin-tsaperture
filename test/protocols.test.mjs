@@ -115,3 +115,58 @@ test("passes the apiKey through to the Bedrock SDK when configured", async () =>
     globalThis.fetch = originalFetch;
   }
 });
+
+test("adds the OpenCode session header to OpenCode Aperture provider groups", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+
+    if (url.pathname === "/api/providers") {
+      return Response.json([
+        { id: "opencode", name: "OpenCode", compatibility: { openai_chat: true } },
+        { id: "opencode-go-x-anthropic", name: "OpenCode Go Anthropic API", compatibility: { anthropic_messages: true } },
+        { id: "other", name: "Other", compatibility: { openai_chat: true } },
+      ]);
+    }
+    if (url.pathname === "/v1/models") {
+      return Response.json({
+        data: [
+          { id: "zen-model", object: "model", created: 0, owned_by: "opencode", metadata: { provider: { id: "opencode", name: "OpenCode" } } },
+          { id: "go-model", object: "model", created: 0, owned_by: "opencode-go-x-anthropic", metadata: { provider: { id: "opencode-go-x-anthropic", name: "OpenCode Go Anthropic API" } } },
+          { id: "other-model", object: "model", created: 0, owned_by: "other", metadata: { provider: { id: "other", name: "Other" } } },
+        ],
+      });
+    }
+    assert.fail(`unexpected path ${url.pathname}`);
+  };
+
+  try {
+    const plugin = await TailscaleAperturePlugin({
+      directory: "/tmp",
+      client: {
+        app: { log: async () => ({}) },
+        tui: { showToast: async () => ({}) },
+      },
+    }, {
+      baseUrl: "https://aperture.example",
+      disableModelsDev: true,
+    });
+    const config = {};
+    await plugin.config(config);
+
+    for (const providerID of ["aperture-opencode", "aperture-opencode-go-anthropic-api"]) {
+      const output = { headers: { existing: "value" } };
+      await plugin["chat.headers"]({ sessionID: "ses_test", model: { providerID } }, output);
+      assert.deepEqual(output.headers, {
+        existing: "value",
+        "x-opencode-session": "ses_test",
+      });
+    }
+
+    const output = { headers: {} };
+    await plugin["chat.headers"]({ sessionID: "ses_test", model: { providerID: "aperture-other" } }, output);
+    assert.deepEqual(output.headers, {});
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

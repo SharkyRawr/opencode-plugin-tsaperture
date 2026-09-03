@@ -290,6 +290,11 @@ function getApertureRouteModelID(model: ApertureModel, providers?: Map<string, A
   return routeProviderID ? `${routeProviderID}/${model.id}` : model.id;
 }
 
+function requiresOpenCodeSessionHeader(routeProviderID?: string): boolean {
+  const providerID = routeProviderID?.split("-x-", 1)[0].toLowerCase();
+  return providerID === "opencode" || providerID === "opencode-go";
+}
+
 function getProviderSDKConfig(protocol: ApertureProtocol, baseUrl: string, apiKey: string): {
   npm: string;
   options: Record<string, string>;
@@ -781,6 +786,7 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
   let modelsLoaded = false;
   let modelLoadPromise: Promise<ApertureModel[]> | undefined;
   const warnedModelsDevFallbacks = new Set<string>();
+  const openCodeSessionProviderIDs = new Set<string>();
 
   function formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -851,6 +857,8 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       models: ApertureModel[];
     }>();
 
+    openCodeSessionProviderIDs.clear();
+
     for (const model of discoveredModels) {
       const group = getProviderGroup(model, discoveredProviders);
       const existingGroup = modelsByProvider.get(group.id);
@@ -865,6 +873,10 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
     }
 
     for (const { group, models } of modelsByProvider.values()) {
+      if (requiresOpenCodeSessionHeader(group.routeProviderID)) {
+        openCodeSessionProviderIDs.add(group.id);
+      }
+
       const existingProvider = config.provider[group.id] ?? {};
       const modelsObj: Record<string, ApertureModelConfig> = {
         ...(existingProvider.models as Record<string, ApertureModelConfig> ?? {}),
@@ -993,6 +1005,12 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
     event: async ({ event }) => {
       if (event.type === "server.connected") {
         markTuiReady();
+      }
+    },
+
+    "chat.headers": async ({ sessionID, model }, output) => {
+      if (openCodeSessionProviderIDs.has(model.providerID)) {
+        output.headers["x-opencode-session"] = sessionID;
       }
     },
 
