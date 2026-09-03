@@ -750,6 +750,7 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
   const fileConfig = await loadApertureConfig(logger);
   const rawBaseUrl = (options?.baseUrl as string) || process.env.APERTURE_BASE_URL || fileConfig.baseUrl;
   const apiKey = (options?.apiKey as string) || process.env.APERTURE_API_KEY || fileConfig.apiKey || "";
+  const openCodeClient = process.env.OPENCODE_CLIENT || "cli";
   const modelsDevConfig: ApertureConfig = {
     ...fileConfig,
     modelsDevUrl: (options?.modelsDevUrl as string | undefined) ?? fileConfig.modelsDevUrl,
@@ -1008,9 +1009,11 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       }
     },
 
-    "chat.headers": async ({ sessionID, model }, output) => {
+    "chat.headers": async ({ sessionID, model, message }, output) => {
       if (openCodeSessionProviderIDs.has(model.providerID)) {
         output.headers["x-opencode-session"] = sessionID;
+        output.headers["x-opencode-request"] = message.id;
+        output.headers["x-opencode-client"] = openCodeClient;
       }
     },
 
