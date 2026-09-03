@@ -34,6 +34,10 @@ function normalizeModelLookup(value) {
         .replace(/-+/g, "-")
         .replace(/^-+|-+$/g, "");
 }
+function stripLookupTag(value) {
+    const tagIndex = value.indexOf(":", value.lastIndexOf("/") + 1);
+    return tagIndex === -1 ? value : value.slice(0, tagIndex);
+}
 function findProviderModel(provider, modelKeys) {
     for (const key of modelKeys) {
         const candidate = provider.models[key];
@@ -47,15 +51,22 @@ function findModelsDevEntry(model, catalog, apertureProvider) {
     if (!catalog) {
         return undefined;
     }
+    const untaggedModelID = stripLookupTag(model.id);
     const modelKeys = new Set([
         model.id,
         model.id.toLowerCase(),
+        untaggedModelID,
+        untaggedModelID.toLowerCase(),
+        normalizeModelLookup(untaggedModelID),
         normalizeModelLookup(model.id),
     ]);
     const apertureProviderID = apertureProvider?.id ?? model.metadata?.provider?.id;
     const modelsDevProviderID = apertureProviderID?.split("-x-", 1)[0];
+    const untaggedProviderID = modelsDevProviderID ? stripLookupTag(modelsDevProviderID) : undefined;
     const provider = modelsDevProviderID
-        ? catalog[modelsDevProviderID] ?? catalog[modelsDevProviderID.toLowerCase()]
+        ? catalog[modelsDevProviderID]
+            ?? catalog[modelsDevProviderID.toLowerCase()]
+            ?? (untaggedProviderID ? catalog[untaggedProviderID] ?? catalog[untaggedProviderID.toLowerCase()] : undefined)
         : undefined;
     if (provider) {
         const candidate = findProviderModel(provider, modelKeys);

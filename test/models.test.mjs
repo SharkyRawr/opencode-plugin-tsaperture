@@ -211,3 +211,74 @@ test("uses the base provider for -x- Aperture variants", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("ignores routing tags when matching Models.dev providers and models", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+
+    if (url.hostname === "models.dev" && url.pathname === "/api.json") {
+      return Response.json({
+        openrouter: {
+          id: "openrouter",
+          name: "OpenRouter",
+          models: {
+            "openai/gpt-5.6-luna": {
+              id: "openai/gpt-5.6-luna",
+              name: "GPT-5.6 Luna",
+              limit: { context: 256000, output: 32768 },
+              reasoning: true,
+            },
+          },
+        },
+      });
+    }
+
+    if (url.hostname === "aperture.example") {
+      if (url.pathname === "/api/providers") {
+        return Response.json([
+          { id: "openrouter:floor", name: "OpenRouter Floor", compatibility: { openai_chat: true } },
+        ]);
+      }
+      if (url.pathname === "/v1/models") {
+        return Response.json({
+          data: [
+            {
+              id: "openai/gpt-5.6-luna:floor",
+              object: "model",
+              created: 0,
+              owned_by: "openrouter:floor",
+              metadata: { provider: { id: "openrouter:floor", name: "OpenRouter Floor" } },
+            },
+          ],
+        });
+      }
+    }
+
+    assert.fail(`unexpected fetch: ${url.toString()}`);
+  };
+
+  try {
+    const plugin = await TailscaleAperturePlugin({
+      directory: "/tmp",
+      client: {
+        app: { log: async () => ({}) },
+        tui: { showToast: async () => ({}) },
+      },
+    }, {
+      baseUrl: "https://aperture.example",
+      modelsDevUrl: "https://models.dev",
+    });
+
+    const config = {};
+    await plugin.config(config);
+
+    const model = config.provider["aperture-openrouter-floor"].models["openai/gpt-5.6-luna:floor"];
+    assert.equal(model.limit.context, 256000);
+    assert.equal(model.limit.output, 32768);
+    assert.equal(model.reasoning, true);
+    assert.equal(model.id, "openrouter:floor/openai/gpt-5.6-luna:floor");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
