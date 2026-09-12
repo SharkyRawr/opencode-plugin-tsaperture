@@ -117,6 +117,7 @@ test("passes the apiKey through to the Bedrock SDK when configured", async () =>
 });
 
 test("adds the OpenCode request headers to OpenCode Aperture provider groups", async () => {
+  let emptyModels = false;
   const originalFetch = globalThis.fetch;
   const originalOpenCodeClient = process.env.OPENCODE_CLIENT;
   process.env.OPENCODE_CLIENT = "test-client";
@@ -132,7 +133,7 @@ test("adds the OpenCode request headers to OpenCode Aperture provider groups", a
     }
     if (url.pathname === "/v1/models") {
       return Response.json({
-        data: [
+        data: emptyModels ? [] : [
           { id: "zen-model", object: "model", created: 0, owned_by: "opencode", metadata: { provider: { id: "opencode", name: "OpenCode" } } },
           { id: "go-model", object: "model", created: 0, owned_by: "opencode-go-x-anthropic", metadata: { provider: { id: "opencode-go-x-anthropic", name: "OpenCode Go Anthropic API" } } },
           { id: "other-model", object: "model", created: 0, owned_by: "other", metadata: { provider: { id: "other", name: "Other" } } },
@@ -170,6 +171,13 @@ test("adds the OpenCode request headers to OpenCode Aperture provider groups", a
     const output = { headers: {} };
     await plugin["chat.headers"]({ sessionID: "ses_test", model: { providerID: "aperture-other" }, message: { id: "msg_test" } }, output);
     assert.deepEqual(output.headers, {});
+
+    emptyModels = true;
+    await plugin.tool.list_aperture_models.execute({ refresh: true });
+    await plugin.config({});
+    const refreshedOutput = { headers: {} };
+    await plugin["chat.headers"]({ sessionID: "ses_test", model: { providerID: "aperture-opencode" }, message: { id: "msg_test" } }, refreshedOutput);
+    assert.deepEqual(refreshedOutput.headers, {}, "empty discovery clears previously registered header IDs");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalOpenCodeClient === undefined) {

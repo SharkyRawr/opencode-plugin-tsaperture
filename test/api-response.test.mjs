@@ -91,6 +91,9 @@ test("registers models in degraded mode when /api/providers fails", async () => 
 
 test("surfaces a /v1/models HTTP error as a startup failure", async () => {
   const toasts = [];
+  const logs = [];
+  let discoveryFinished;
+  const discovery = new Promise((resolve) => { discoveryFinished = resolve; });
   const restore = stubFetch({
     "aperture.example/api/providers": providers,
     "aperture.example/v1/models": () => Response.json({ error: "boom" }, { status: 500 }),
@@ -99,13 +102,27 @@ test("surfaces a /v1/models HTTP error as a startup failure", async () => {
     const plugin = await TailscaleAperturePlugin({
       directory: "/tmp",
       client: {
-        app: { log: async () => ({}) },
-        tui: { showToast: async ({ body }) => { toasts.push(body); return {}; } },
+        app: { log: async ({ body }) => {
+          logs.push(body);
+          if (body.message.includes("Startup step Aperture model discovery finished")) discoveryFinished();
+          return {};
+        } },
+        tui: { showToast: async ({ body }) => {
+          toasts.push(body);
+          if (toasts.length === 1) throw new Error("toast transport failed");
+          return {};
+        } },
       },
     }, { baseUrl: "https://aperture.example" });
+    // Let discovery reject before the config hook attaches its handler.
+    await discovery;
+    await new Promise((resolve) => setImmediate(resolve));
     const config = {};
     await plugin.config(config);
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(config.provider, undefined, "no provider config is emitted on failure");
+    assert.equal(toasts.length, 2, "the queue continues draining after a rejected toast");
+    assert.ok(logs.some((entry) => entry.level === "warn" && entry.message.includes("Failed to show opencode toast")));
   } finally {
     restore();
   }

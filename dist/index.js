@@ -485,21 +485,29 @@ export const TailscaleAperturePlugin = async (input, options) => {
         if (!tuiReady) {
             return;
         }
-        let toast;
-        while ((toast = pendingToasts.shift())) {
-            const result = await client.tui.showToast({
-                body: {
-                    title: "Tailscale Aperture",
-                    message: toast.message,
-                    variant: toast.variant,
-                    duration: 10_000,
-                },
-                query: {
-                    directory: input.directory,
-                },
-            });
-            if (result.error) {
-                logger.warn(`[TailscaleAperture] Failed to show opencode toast: ${JSON.stringify(result.error)}`);
+        while (true) {
+            const toast = pendingToasts.shift();
+            if (!toast) {
+                break;
+            }
+            try {
+                const result = await client.tui.showToast({
+                    body: {
+                        title: "Tailscale Aperture",
+                        message: toast.message,
+                        variant: toast.variant,
+                        duration: 10_000,
+                    },
+                    query: {
+                        directory: input.directory,
+                    },
+                });
+                if (result.error) {
+                    logger.warn(`[TailscaleAperture] Failed to show opencode toast: ${JSON.stringify(result.error)}`);
+                }
+            }
+            catch (error) {
+                logger.warn("[TailscaleAperture] Failed to show opencode toast:", error);
             }
         }
     }
@@ -597,13 +605,13 @@ export const TailscaleAperturePlugin = async (input, options) => {
     }
     function mutateConfig(config) {
         config.provider ??= {};
+        openCodeSessionProviderIDs.clear();
         if (discoveredModels.length === 0) {
             return 0;
         }
         const hadBaseProvider = Object.prototype.hasOwnProperty.call(config.provider, "aperture");
         const baseProvider = config.provider.aperture ?? {};
         const modelsByProvider = new Map();
-        openCodeSessionProviderIDs.clear();
         for (const model of discoveredModels) {
             const group = getProviderGroup(model, discoveredProviders);
             const existingGroup = modelsByProvider.get(group.id);
@@ -675,7 +683,7 @@ export const TailscaleAperturePlugin = async (input, options) => {
             discoveredModels = await loadModels(false);
             if (discoveredModels.length === 0) {
                 logger.warn("[TailscaleAperture] No models found");
-                showMessage("success", `No Aperture models found at ${baseUrl}`);
+                showMessage("warning", `No Aperture models found at ${baseUrl}`);
                 return discoveredModels;
             }
             logger.info(`[TailscaleAperture] Discovered ${discoveredModels.length} models from ${baseUrl}`);
@@ -704,6 +712,9 @@ export const TailscaleAperturePlugin = async (input, options) => {
             logger.info(`[TailscaleAperture] Startup step Aperture model discovery finished in ${formatDuration(startupModelsDurationMs)}`);
         }
     })();
+    // Discovery may reject before the config hook starts awaiting it.
+    // Keep the original promise so the hook still receives the failure.
+    void startupModels.catch(() => { });
     const startupModelsDevCatalog = (async () => {
         const startedAt = Date.now();
         try {

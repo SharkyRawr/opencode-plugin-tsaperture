@@ -95,7 +95,7 @@ type ApertureModelConfig = {
   variants?: Record<string, Record<string, unknown>>;
 };
 
-type ToastVariant = "success" | "error";
+type ToastVariant = "success" | "warning" | "error";
 
 type ModelsDevModel = {
   id: string;
@@ -730,21 +730,28 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       return;
     }
 
-    let toast: { variant: ToastVariant; message: string } | undefined;
-    while ((toast = pendingToasts.shift())) {
-      const result = await client.tui.showToast({
-        body: {
-          title: "Tailscale Aperture",
-          message: toast.message,
-          variant: toast.variant,
-          duration: 10_000,
-        },
-        query: {
-          directory: input.directory,
-        },
-      });
-      if (result.error) {
-        logger.warn(`[TailscaleAperture] Failed to show opencode toast: ${JSON.stringify(result.error)}`);
+    while (true) {
+      const toast = pendingToasts.shift();
+      if (!toast) {
+        break;
+      }
+      try {
+        const result = await client.tui.showToast({
+          body: {
+            title: "Tailscale Aperture",
+            message: toast.message,
+            variant: toast.variant,
+            duration: 10_000,
+          },
+          query: {
+            directory: input.directory,
+          },
+        });
+        if (result.error) {
+          logger.warn(`[TailscaleAperture] Failed to show opencode toast: ${JSON.stringify(result.error)}`);
+        }
+      } catch (error) {
+        logger.warn("[TailscaleAperture] Failed to show opencode toast:", error);
       }
     }
   }
@@ -858,6 +865,7 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
 
   function mutateConfig(config: Config): number {
     config.provider ??= {};
+    openCodeSessionProviderIDs.clear();
 
     if (discoveredModels.length === 0) {
       return 0;
@@ -869,8 +877,6 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       group: ApertureProviderGroup;
       models: ApertureModel[];
     }>();
-
-    openCodeSessionProviderIDs.clear();
 
     for (const model of discoveredModels) {
       const group = getProviderGroup(model, discoveredProviders);
@@ -952,7 +958,7 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       discoveredModels = await loadModels(false);
       if (discoveredModels.length === 0) {
         logger.warn("[TailscaleAperture] No models found");
-        showMessage("success", `No Aperture models found at ${baseUrl}`);
+        showMessage("warning", `No Aperture models found at ${baseUrl}`);
         return discoveredModels;
       }
 
@@ -982,6 +988,10 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       logger.info(`[TailscaleAperture] Startup step Aperture model discovery finished in ${formatDuration(startupModelsDurationMs)}`);
     }
   })();
+
+  // Discovery may reject before the config hook starts awaiting it.
+  // Keep the original promise so the hook still receives the failure.
+  void startupModels.catch(() => {});
 
   const startupModelsDevCatalog = (async () => {
     const startedAt = Date.now();
