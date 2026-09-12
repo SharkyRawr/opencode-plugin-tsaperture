@@ -1,10 +1,10 @@
-import type { Plugin, Config } from "@opencode-ai/plugin";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { platform } from "node:process";
+import type { Config, Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
-import { homedir } from "os";
-import { join } from "path";
-import { readFile } from "fs/promises";
-import { platform } from "process";
-import { createRequire } from "module";
 
 interface ApertureModel {
   id: string;
@@ -47,9 +47,11 @@ interface ApertureConfig {
   disableModelsDev?: boolean;
 }
 
-type InterleavedConfig = true | {
-  field: "reasoning_content" | "reasoning_details";
-};
+type InterleavedConfig =
+  | true
+  | {
+      field: "reasoning_content" | "reasoning_details";
+    };
 
 type ModelCost = {
   input: number;
@@ -197,7 +199,10 @@ function stripLookupTag(value: string): string {
   return tagIndex === -1 ? value : value.slice(0, tagIndex);
 }
 
-function findProviderModel(provider: ModelsDevProvider, modelKeys: Set<string>): ModelsDevModel | undefined {
+function findProviderModel(
+  provider: ModelsDevProvider,
+  modelKeys: Set<string>,
+): ModelsDevModel | undefined {
   for (const key of modelKeys) {
     const candidate = provider.models[key];
     if (candidate) {
@@ -212,10 +217,12 @@ function findModelsDevEntry(
   model: ApertureModel,
   catalog?: ModelsDevCatalog,
   apertureProvider?: ApertureProviderMetadata,
-): {
-  provider: ModelsDevProvider;
-  model: ModelsDevModel;
-} | undefined {
+):
+  | {
+      provider: ModelsDevProvider;
+      model: ModelsDevModel;
+    }
+  | undefined {
   if (!catalog) {
     return undefined;
   }
@@ -229,13 +236,19 @@ function findModelsDevEntry(
     normalizeModelLookup(untaggedModelID),
     normalizeModelLookup(model.id),
   ]);
-  const apertureProviderID = apertureProvider?.id ?? model.metadata?.provider?.id;
+  const apertureProviderID =
+    apertureProvider?.id ?? model.metadata?.provider?.id;
   const modelsDevProviderID = apertureProviderID?.split("-x-", 1)[0];
-  const untaggedProviderID = modelsDevProviderID ? stripLookupTag(modelsDevProviderID) : undefined;
+  const untaggedProviderID = modelsDevProviderID
+    ? stripLookupTag(modelsDevProviderID)
+    : undefined;
   const provider = modelsDevProviderID
-    ? catalog[modelsDevProviderID]
-      ?? catalog[modelsDevProviderID.toLowerCase()]
-      ?? (untaggedProviderID ? catalog[untaggedProviderID] ?? catalog[untaggedProviderID.toLowerCase()] : undefined)
+    ? (catalog[modelsDevProviderID] ??
+      catalog[modelsDevProviderID.toLowerCase()] ??
+      (untaggedProviderID
+        ? (catalog[untaggedProviderID] ??
+          catalog[untaggedProviderID.toLowerCase()])
+        : undefined))
     : undefined;
 
   if (provider) {
@@ -245,7 +258,10 @@ function findModelsDevEntry(
     }
   }
 
-  const exactMatches: Array<{ provider: ModelsDevProvider; model: ModelsDevModel }> = [];
+  const exactMatches: Array<{
+    provider: ModelsDevProvider;
+    model: ModelsDevModel;
+  }> = [];
   for (const provider of Object.values(catalog)) {
     for (const key of modelKeys) {
       const candidate = provider.models[key];
@@ -258,17 +274,27 @@ function findModelsDevEntry(
   return exactMatches.length === 1 ? exactMatches[0] : undefined;
 }
 
-function getApertureProtocol(compatibility?: ApertureProviderCompatibility): ApertureProtocol {
+function getApertureProtocol(
+  compatibility?: ApertureProviderCompatibility,
+): ApertureProtocol {
   if (compatibility?.openai_responses) return "openai_responses";
   if (compatibility?.anthropic_messages) return "anthropic_messages";
   if (compatibility?.openai_chat) return "openai_chat";
-  if (compatibility?.google_generate_content || compatibility?.google_raw_predict) return "google_vertex";
-  if (compatibility?.bedrock_model_invoke || compatibility?.bedrock_converse) return "bedrock";
+  if (
+    compatibility?.google_generate_content ||
+    compatibility?.google_raw_predict
+  )
+    return "google_vertex";
+  if (compatibility?.bedrock_model_invoke || compatibility?.bedrock_converse)
+    return "bedrock";
   if (compatibility?.gemini_generate_content) return "gemini_generate_content";
   return "openai_chat";
 }
 
-function getProviderGroup(model: ApertureModel, providers?: Map<string, ApertureProviderMetadata>): ApertureProviderGroup {
+function getProviderGroup(
+  model: ApertureModel,
+  providers?: Map<string, ApertureProviderMetadata>,
+): ApertureProviderGroup {
   const providerID = model.metadata?.provider?.id?.trim();
   const providerName = model.metadata?.provider?.name?.trim();
   const providerSegment = providerName || providerID;
@@ -282,7 +308,9 @@ function getProviderGroup(model: ApertureModel, providers?: Map<string, Aperture
     };
   }
 
-  const protocol = getApertureProtocol(providers?.get(routeProviderID)?.compatibility);
+  const protocol = getApertureProtocol(
+    providers?.get(routeProviderID)?.compatibility,
+  );
 
   return {
     id: `aperture-${slugifyProviderSegment(providerSegment)}`,
@@ -292,12 +320,18 @@ function getProviderGroup(model: ApertureModel, providers?: Map<string, Aperture
   };
 }
 
-function getModelProviderKey(model: ApertureModel, providers?: Map<string, ApertureProviderMetadata>): string {
+function getModelProviderKey(
+  model: ApertureModel,
+  providers?: Map<string, ApertureProviderMetadata>,
+): string {
   const group = getProviderGroup(model, providers);
   return `${group.id}:${group.protocol}:${model.id}`;
 }
 
-function getApertureRouteModelID(model: ApertureModel, providers?: Map<string, ApertureProviderMetadata>): string {
+function getApertureRouteModelID(
+  model: ApertureModel,
+  providers?: Map<string, ApertureProviderMetadata>,
+): string {
   const routeProviderID = getProviderGroup(model, providers).routeProviderID;
   return routeProviderID ? `${routeProviderID}/${model.id}` : model.id;
 }
@@ -307,18 +341,31 @@ function requiresOpenCodeSessionHeader(routeProviderID?: string): boolean {
   return providerID === "opencode" || providerID === "opencode-go";
 }
 
-function getProviderSDKConfig(protocol: ApertureProtocol, baseUrl: string, apiKey: string): {
+function getProviderSDKConfig(
+  protocol: ApertureProtocol,
+  baseUrl: string,
+  apiKey: string,
+): {
   npm: string;
   options: Record<string, string>;
 } {
   const key = apiKey || "not-required";
   switch (protocol) {
     case "openai_responses":
-      return { npm: "@ai-sdk/openai", options: { baseURL: `${baseUrl}/v1`, apiKey: key } };
+      return {
+        npm: "@ai-sdk/openai",
+        options: { baseURL: `${baseUrl}/v1`, apiKey: key },
+      };
     case "anthropic_messages":
-      return { npm: "@ai-sdk/anthropic", options: { baseURL: `${baseUrl}/v1`, apiKey: key } };
+      return {
+        npm: "@ai-sdk/anthropic",
+        options: { baseURL: `${baseUrl}/v1`, apiKey: key },
+      };
     case "openai_chat":
-      return { npm: "@ai-sdk/openai-compatible", options: { baseURL: `${baseUrl}/v1`, apiKey: key } };
+      return {
+        npm: "@ai-sdk/openai-compatible",
+        options: { baseURL: `${baseUrl}/v1`, apiKey: key },
+      };
     case "google_vertex":
       // apiKey selects Vertex express mode; Aperture rewrites the placeholder project and region.
       return {
@@ -342,12 +389,19 @@ function getProviderSDKConfig(protocol: ApertureProtocol, baseUrl: string, apiKe
             },
       };
     case "gemini_generate_content":
-      return { npm: "@ai-sdk/google", options: { baseURL: `${baseUrl}/v1beta`, apiKey: key } };
+      return {
+        npm: "@ai-sdk/google",
+        options: { baseURL: `${baseUrl}/v1beta`, apiKey: key },
+      };
   }
 }
 
-function getCatalogReasoningVariants(model: ModelsDevModel): Record<string, Record<string, unknown>> | undefined {
-  const effort = model.reasoning_options?.find((option) => option.type === "effort");
+function getCatalogReasoningVariants(
+  model: ModelsDevModel,
+): Record<string, Record<string, unknown>> | undefined {
+  const effort = model.reasoning_options?.find(
+    (option) => option.type === "effort",
+  );
   const values = effort?.values
     ?.map((value) => value.trim())
     .filter((value) => value.length > 0);
@@ -356,10 +410,9 @@ function getCatalogReasoningVariants(model: ModelsDevModel): Record<string, Reco
     return undefined;
   }
 
-  return Object.fromEntries(values.map((value) => [
-    value,
-    { reasoningEffort: value },
-  ]));
+  return Object.fromEntries(
+    values.map((value) => [value, { reasoningEffort: value }]),
+  );
 }
 
 function getModelsDevDefaults(entry: {
@@ -396,7 +449,9 @@ function getModelDefaults(
   providers?: Map<string, ApertureProviderMetadata>,
 ): ModelDefaultsResult {
   const routeProviderID = getProviderGroup(model, providers).routeProviderID;
-  const apertureProvider = routeProviderID ? providers?.get(routeProviderID) : undefined;
+  const apertureProvider = routeProviderID
+    ? providers?.get(routeProviderID)
+    : undefined;
   const modelsDevEntry = findModelsDevEntry(model, catalog, apertureProvider);
   if (modelsDevEntry) {
     return {
@@ -427,26 +482,43 @@ function getModelDefaults(
 }
 
 // ponytail: defaults never set options/headers, so only limit/modalities/cost/interleaved need merging
-function mergeModelConfig(defaults: Omit<ApertureModelConfig, "id" | "name">, existing: ApertureModelConfig = {}): ApertureModelConfig {
-  const limit = defaults.limit || existing.limit ? {
-    context: existing.limit?.context ?? defaults.limit?.context ?? 0,
-    input: existing.limit?.input ?? defaults.limit?.input,
-    output: existing.limit?.output ?? defaults.limit?.output ?? 0,
-  } : undefined;
-  const modalities = defaults.modalities || existing.modalities ? {
-    input: existing.modalities?.input ?? defaults.modalities?.input ?? ["text"],
-    output: existing.modalities?.output ?? defaults.modalities?.output ?? ["text"],
-  } : undefined;
-  const cost = defaults.cost || existing.cost ? {
-    ...defaults.cost,
-    ...existing.cost,
-    ...(defaults.cost?.context_over_200k || existing.cost?.context_over_200k ? {
-      context_over_200k: {
-        ...defaults.cost?.context_over_200k,
-        ...existing.cost?.context_over_200k,
-      },
-    } : {}),
-  } as ModelCost : undefined;
+function mergeModelConfig(
+  defaults: Omit<ApertureModelConfig, "id" | "name">,
+  existing: ApertureModelConfig = {},
+): ApertureModelConfig {
+  const limit =
+    defaults.limit || existing.limit
+      ? {
+          context: existing.limit?.context ?? defaults.limit?.context ?? 0,
+          input: existing.limit?.input ?? defaults.limit?.input,
+          output: existing.limit?.output ?? defaults.limit?.output ?? 0,
+        }
+      : undefined;
+  const modalities =
+    defaults.modalities || existing.modalities
+      ? {
+          input: existing.modalities?.input ??
+            defaults.modalities?.input ?? ["text"],
+          output: existing.modalities?.output ??
+            defaults.modalities?.output ?? ["text"],
+        }
+      : undefined;
+  const cost =
+    defaults.cost || existing.cost
+      ? ({
+          ...defaults.cost,
+          ...existing.cost,
+          ...(defaults.cost?.context_over_200k ||
+          existing.cost?.context_over_200k
+            ? {
+                context_over_200k: {
+                  ...defaults.cost?.context_over_200k,
+                  ...existing.cost?.context_over_200k,
+                },
+              }
+            : {}),
+        } as ModelCost)
+      : undefined;
 
   return {
     ...defaults,
@@ -454,15 +526,19 @@ function mergeModelConfig(defaults: Omit<ApertureModelConfig, "id" | "name">, ex
     ...(limit ? { limit } : {}),
     ...(cost ? { cost } : {}),
     ...(modalities ? { modalities } : {}),
-    ...(defaults.interleaved || existing.interleaved ? {
-      interleaved: existing.interleaved ?? defaults.interleaved,
-    } : {}),
-    ...(defaults.variants || existing.variants ? {
-      variants: {
-        ...defaults.variants,
-        ...existing.variants,
-      },
-    } : {}),
+    ...(defaults.interleaved || existing.interleaved
+      ? {
+          interleaved: existing.interleaved ?? defaults.interleaved,
+        }
+      : {}),
+    ...(defaults.variants || existing.variants
+      ? {
+          variants: {
+            ...defaults.variants,
+            ...existing.variants,
+          },
+        }
+      : {}),
   };
 }
 
@@ -483,11 +559,19 @@ async function waitForStableModels(
     previousModels = [] as ApertureModel[],
     previousProviders = new Map<string, ApertureProviderMetadata>(),
   } = {},
-): Promise<{ models: ApertureModel[]; providers: Map<string, ApertureProviderMetadata>; providersDegraded: boolean }> {
+): Promise<{
+  models: ApertureModel[];
+  providers: Map<string, ApertureProviderMetadata>;
+  providersDegraded: boolean;
+}> {
   const deadline = Date.now() + deadlineMs;
-  let previousIds: string | undefined = previousModels.length > 0
-    ? previousModels.map((model) => getModelProviderKey(model, previousProviders)).sort().join("\n")
-    : undefined;
+  let previousIds: string | undefined =
+    previousModels.length > 0
+      ? previousModels
+          .map((model) => getModelProviderKey(model, previousProviders))
+          .sort()
+          .join("\n")
+      : undefined;
   let lastGoodResult: ApertureModel[] = previousModels;
   let lastGoodProviders = previousProviders;
   let lastGoodProvidersDegraded = false;
@@ -497,14 +581,32 @@ async function waitForStableModels(
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
     if (remaining < minFetchTimeoutMs && lastGoodResult.length > 0) {
-      return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
+      return {
+        models: lastGoodResult,
+        providers: lastGoodProviders,
+        providersDegraded: lastGoodProvidersDegraded,
+      };
     }
 
     try {
-      const providerResult = await fetchApertureProviders(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
+      const providerResult = await fetchApertureProviders(
+        baseUrl,
+        apiKey,
+        logger,
+        Math.min(remaining, fetchTimeoutMs),
+      );
       const providers = providerResult.providers;
-      const models = await fetchApertureModels(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs), providers);
-      const ids = models.map((model) => getModelProviderKey(model, providers)).sort().join("\n");
+      const models = await fetchApertureModels(
+        baseUrl,
+        apiKey,
+        logger,
+        Math.min(remaining, fetchTimeoutMs),
+        providers,
+      );
+      const ids = models
+        .map((model) => getModelProviderKey(model, providers))
+        .sort()
+        .join("\n");
 
       lastGoodResult = models;
       lastGoodProviders = providers;
@@ -512,7 +614,11 @@ async function waitForStableModels(
       sawSuccessfulFetch = true;
 
       if (ids === previousIds) {
-        return { models, providers, providersDegraded: providerResult.degraded };
+        return {
+          models,
+          providers,
+          providersDegraded: providerResult.degraded,
+        };
       }
       previousIds = ids;
     } catch (error) {
@@ -521,7 +627,11 @@ async function waitForStableModels(
     }
 
     if (Date.now() + pollIntervalMs >= deadline && lastGoodResult.length > 0) {
-      return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
+      return {
+        models: lastGoodResult,
+        providers: lastGoodProviders,
+        providersDegraded: lastGoodProvidersDegraded,
+      };
     }
 
     await new Promise((r) => setTimeout(r, pollIntervalMs));
@@ -531,29 +641,48 @@ async function waitForStableModels(
     throw lastError;
   }
 
-  return { models: lastGoodResult, providers: lastGoodProviders, providersDegraded: lastGoodProvidersDegraded };
+  return {
+    models: lastGoodResult,
+    providers: lastGoodProviders,
+    providersDegraded: lastGoodProvidersDegraded,
+  };
 }
 
-async function fetchApertureProviders(baseUrl: string, apiKey: string, logger: Logger, timeoutMs = INTERACTIVE_FETCH_TIMEOUT_MS): Promise<ApertureProviderFetchResult> {
+async function fetchApertureProviders(
+  baseUrl: string,
+  apiKey: string,
+  logger: Logger,
+  timeoutMs = INTERACTIVE_FETCH_TIMEOUT_MS,
+): Promise<ApertureProviderFetchResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const url = `${baseUrl}/api/providers`;
   try {
     const response = await fetch(url, {
       signal: controller.signal,
-      headers: apiKey ? {
-        Authorization: `Bearer ${apiKey}`,
-      } : undefined,
+      headers: apiKey
+        ? {
+            Authorization: `Bearer ${apiKey}`,
+          }
+        : undefined,
     });
     if (!response.ok) {
-      logger.warn(`[TailscaleAperture] Aperture API request failed: GET /api/providers ${response.status} ${response.statusText}`);
+      logger.warn(
+        `[TailscaleAperture] Aperture API request failed: GET /api/providers ${response.status} ${response.statusText}`,
+      );
       return { providers: new Map(), degraded: true };
     }
 
-    const providers = await response.json() as ApertureProviderMetadata[];
-    return { providers: new Map(providers.map((provider) => [provider.id, provider])), degraded: false };
+    const providers = (await response.json()) as ApertureProviderMetadata[];
+    return {
+      providers: new Map(providers.map((provider) => [provider.id, provider])),
+      degraded: false,
+    };
   } catch (error) {
-    logger.warn("[TailscaleAperture] Aperture API request failed: GET /api/providers", error);
+    logger.warn(
+      "[TailscaleAperture] Aperture API request failed: GET /api/providers",
+      error,
+    );
     return { providers: new Map(), degraded: true };
   } finally {
     clearTimeout(timer);
@@ -573,24 +702,40 @@ async function fetchApertureModels(
   try {
     const response = await fetch(url, {
       signal: controller.signal,
-      headers: apiKey ? {
-        Authorization: `Bearer ${apiKey}`,
-      } : undefined,
+      headers: apiKey
+        ? {
+            Authorization: `Bearer ${apiKey}`,
+          }
+        : undefined,
     });
     if (!response.ok) {
-      logger.warn(`[TailscaleAperture] Aperture API request failed: GET /v1/models ${response.status} ${response.statusText}`);
-      throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
+      logger.warn(
+        `[TailscaleAperture] Aperture API request failed: GET /v1/models ${response.status} ${response.statusText}`,
+      );
+      throw new Error(
+        `Failed to fetch models: ${response.status} ${response.statusText}`,
+      );
     }
 
-    const data = await response.json() as ApertureResponse;
+    const data = (await response.json()) as ApertureResponse;
     return Array.from(
-      new Map((data.data ?? [])
-        .filter((model) => model.id)
-        .map((model) => [getModelProviderKey(model, providers), model])).values(),
+      new Map(
+        (data.data ?? [])
+          .filter((model) => model.id)
+          .map((model) => [getModelProviderKey(model, providers), model]),
+      ).values(),
     );
   } catch (error) {
-    if (!(error instanceof Error && error.message.startsWith("Failed to fetch models:"))) {
-      logger.warn("[TailscaleAperture] Aperture API request failed: GET /v1/models", error);
+    if (
+      !(
+        error instanceof Error &&
+        error.message.startsWith("Failed to fetch models:")
+      )
+    ) {
+      logger.warn(
+        "[TailscaleAperture] Aperture API request failed: GET /v1/models",
+        error,
+      );
     }
     throw error;
   } finally {
@@ -598,17 +743,27 @@ async function fetchApertureModels(
   }
 }
 
-async function readModelsDevCatalog(path: string, logger: Logger): Promise<ModelsDevCatalog | undefined> {
+async function readModelsDevCatalog(
+  path: string,
+  logger: Logger,
+): Promise<ModelsDevCatalog | undefined> {
   try {
     const content = await readFile(path, "utf-8");
     return JSON.parse(content) as ModelsDevCatalog;
   } catch (error) {
-    logger.warn(`[TailscaleAperture] Failed to read Models.dev catalog from ${path}:`, error);
+    logger.warn(
+      `[TailscaleAperture] Failed to read Models.dev catalog from ${path}:`,
+      error,
+    );
     return undefined;
   }
 }
 
-async function fetchModelsDevCatalog(url: string, logger: Logger, timeoutMs = MODELS_DEV_FETCH_TIMEOUT_MS): Promise<ModelsDevCatalog | undefined> {
+async function fetchModelsDevCatalog(
+  url: string,
+  logger: Logger,
+  timeoutMs = MODELS_DEV_FETCH_TIMEOUT_MS,
+): Promise<ModelsDevCatalog | undefined> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const baseUrl = url.replace(/\/+$/, "");
@@ -621,20 +776,28 @@ async function fetchModelsDevCatalog(url: string, logger: Logger, timeoutMs = MO
       },
     });
     if (!response.ok) {
-      logger.warn(`[TailscaleAperture] Models.dev request failed: GET /api.json ${response.status} ${response.statusText}`);
+      logger.warn(
+        `[TailscaleAperture] Models.dev request failed: GET /api.json ${response.status} ${response.statusText}`,
+      );
       return undefined;
     }
 
-    return await response.json() as ModelsDevCatalog;
+    return (await response.json()) as ModelsDevCatalog;
   } catch (error) {
-    logger.warn("[TailscaleAperture] Models.dev request failed: GET /api.json", error);
+    logger.warn(
+      "[TailscaleAperture] Models.dev request failed: GET /api.json",
+      error,
+    );
     return undefined;
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function loadModelsDevCatalog(config: ApertureConfig, logger: Logger): Promise<ModelsDevCatalog | undefined> {
+async function loadModelsDevCatalog(
+  config: ApertureConfig,
+  logger: Logger,
+): Promise<ModelsDevCatalog | undefined> {
   if (config.disableModelsDev || process.env.OPENCODE_DISABLE_MODELS_FETCH) {
     logger.info("[TailscaleAperture] Models.dev enrichment disabled");
     return undefined;
@@ -645,7 +808,10 @@ async function loadModelsDevCatalog(config: ApertureConfig, logger: Logger): Pro
     return readModelsDevCatalog(path, logger);
   }
 
-  const url = config.modelsDevUrl || process.env.OPENCODE_MODELS_URL || "https://models.dev";
+  const url =
+    config.modelsDevUrl ||
+    process.env.OPENCODE_MODELS_URL ||
+    "https://models.dev";
   return fetchModelsDevCatalog(url, logger);
 }
 
@@ -654,7 +820,9 @@ function getOpenCodeConfigDirs(): string[] {
   const dirs: string[] = [];
 
   if (platform === "win32") {
-    dirs.push(join(process.env.APPDATA || process.env.LOCALAPPDATA || home, "opencode"));
+    dirs.push(
+      join(process.env.APPDATA || process.env.LOCALAPPDATA || home, "opencode"),
+    );
   } else if (platform === "darwin") {
     const xdgConfig = process.env.XDG_CONFIG_HOME;
     if (xdgConfig) {
@@ -700,15 +868,28 @@ async function loadApertureConfig(logger: Logger): Promise<ApertureConfig> {
 export const TailscaleAperturePlugin: Plugin = async (input, options) => {
   const client = input.client;
 
-  function writeLog(level: "debug" | "info" | "warn" | "error", message: string, args: unknown[]): void {
-    client.app.log({
-      body: {
-        service: "TailscaleAperture",
-        level,
-        message,
-        extra: args.length > 0 ? { args: args.map((a) => a instanceof Error ? a.stack || a.message : String(a)) } : undefined,
-      },
-    }).catch(() => {});
+  function writeLog(
+    level: "debug" | "info" | "warn" | "error",
+    message: string,
+    args: unknown[],
+  ): void {
+    client.app
+      .log({
+        body: {
+          service: "TailscaleAperture",
+          level,
+          message,
+          extra:
+            args.length > 0
+              ? {
+                  args: args.map((a) =>
+                    a instanceof Error ? a.stack || a.message : String(a),
+                  ),
+                }
+              : undefined,
+        },
+      })
+      .catch(() => {});
   }
 
   const logger: Logger = {
@@ -748,10 +929,15 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
           },
         });
         if (result.error) {
-          logger.warn(`[TailscaleAperture] Failed to show opencode toast: ${JSON.stringify(result.error)}`);
+          logger.warn(
+            `[TailscaleAperture] Failed to show opencode toast: ${JSON.stringify(result.error)}`,
+          );
         }
       } catch (error) {
-        logger.warn("[TailscaleAperture] Failed to show opencode toast:", error);
+        logger.warn(
+          "[TailscaleAperture] Failed to show opencode toast:",
+          error,
+        );
       }
     }
   }
@@ -767,18 +953,31 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
   }
 
   const fileConfig = await loadApertureConfig(logger);
-  const rawBaseUrl = (options?.baseUrl as string) || process.env.APERTURE_BASE_URL || fileConfig.baseUrl;
-  const apiKey = (options?.apiKey as string) || process.env.APERTURE_API_KEY || fileConfig.apiKey || "";
+  const rawBaseUrl =
+    (options?.baseUrl as string) ||
+    process.env.APERTURE_BASE_URL ||
+    fileConfig.baseUrl;
+  const apiKey =
+    (options?.apiKey as string) ||
+    process.env.APERTURE_API_KEY ||
+    fileConfig.apiKey ||
+    "";
   const openCodeClient = process.env.OPENCODE_CLIENT || "cli";
   const modelsDevConfig: ApertureConfig = {
     ...fileConfig,
-    modelsDevUrl: (options?.modelsDevUrl as string | undefined) ?? fileConfig.modelsDevUrl,
-    modelsDevPath: (options?.modelsDevPath as string | undefined) ?? fileConfig.modelsDevPath,
-    disableModelsDev: (options?.disableModelsDev as boolean | undefined) ?? fileConfig.disableModelsDev,
+    modelsDevUrl:
+      (options?.modelsDevUrl as string | undefined) ?? fileConfig.modelsDevUrl,
+    modelsDevPath:
+      (options?.modelsDevPath as string | undefined) ??
+      fileConfig.modelsDevPath,
+    disableModelsDev:
+      (options?.disableModelsDev as boolean | undefined) ??
+      fileConfig.disableModelsDev,
   };
 
   if (!rawBaseUrl) {
-    const message = "No baseUrl configured. Set APERTURE_BASE_URL, add baseUrl to plugin options, or create aperture.json in opencode config directory.";
+    const message =
+      "No baseUrl configured. Set APERTURE_BASE_URL, add baseUrl to plugin options, or create aperture.json in opencode config directory.";
     logger.warn(`[TailscaleAperture] ${message}`);
     showMessage("error", message);
     return {
@@ -794,7 +993,9 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
   }
 
   if (!apiKey) {
-    logger.info("[TailscaleAperture] No API key configured. This may be okay if you don't use authorization.");
+    logger.info(
+      "[TailscaleAperture] No API key configured. This may be okay if you don't use authorization.",
+    );
   }
 
   const baseUrl = normalizeBaseUrl(rawBaseUrl);
@@ -822,7 +1023,8 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
     }
 
     providerMetadataWarningShown = true;
-    const message = "Aperture provider metadata could not be loaded. Models were registered in degraded mode; provider grouping or wire API selection may be less accurate.";
+    const message =
+      "Aperture provider metadata could not be loaded. Models were registered in degraded mode; provider grouping or wire API selection may be less accurate.";
     logger.warn(`[TailscaleAperture] ${message}`);
     showMessage("error", message);
   }
@@ -834,10 +1036,20 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
 
     if (refresh && modelsLoaded) {
       // Interactive refresh: single fetch, no stabilization wait.
-      const providerResult = await fetchApertureProviders(baseUrl, apiKey, logger);
+      const providerResult = await fetchApertureProviders(
+        baseUrl,
+        apiKey,
+        logger,
+      );
       discoveredProviders = providerResult.providers;
       providerMetadataDegraded = providerResult.degraded;
-      discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger, INTERACTIVE_FETCH_TIMEOUT_MS, discoveredProviders);
+      discoveredModels = await fetchApertureModels(
+        baseUrl,
+        apiKey,
+        logger,
+        INTERACTIVE_FETCH_TIMEOUT_MS,
+        discoveredProviders,
+      );
       warnProviderMetadataDegraded();
       return discoveredModels;
     }
@@ -849,16 +1061,18 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
     modelLoadPromise = waitForStableModels(baseUrl, apiKey, logger, {
       previousModels: discoveredModels,
       previousProviders: discoveredProviders,
-    }).then((result) => {
-      discoveredModels = result.models;
-      discoveredProviders = result.providers;
-      providerMetadataDegraded = result.providersDegraded;
-      modelsLoaded = true;
-      warnProviderMetadataDegraded();
-      return discoveredModels;
-    }).finally(() => {
-      modelLoadPromise = undefined;
-    });
+    })
+      .then((result) => {
+        discoveredModels = result.models;
+        discoveredProviders = result.providers;
+        providerMetadataDegraded = result.providersDegraded;
+        modelsLoaded = true;
+        warnProviderMetadataDegraded();
+        return discoveredModels;
+      })
+      .finally(() => {
+        modelLoadPromise = undefined;
+      });
 
     return modelLoadPromise;
   }
@@ -871,12 +1085,15 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       return 0;
     }
 
-    const hadBaseProvider = Object.prototype.hasOwnProperty.call(config.provider, "aperture");
+    const hadBaseProvider = Object.hasOwn(config.provider, "aperture");
     const baseProvider = config.provider.aperture ?? {};
-    const modelsByProvider = new Map<string, {
-      group: ApertureProviderGroup;
-      models: ApertureModel[];
-    }>();
+    const modelsByProvider = new Map<
+      string,
+      {
+        group: ApertureProviderGroup;
+        models: ApertureModel[];
+      }
+    >();
 
     for (const model of discoveredModels) {
       const group = getProviderGroup(model, discoveredProviders);
@@ -898,17 +1115,29 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
 
       const existingProvider = config.provider[group.id] ?? {};
       const modelsObj: Record<string, ApertureModelConfig> = {
-        ...(existingProvider.models as Record<string, ApertureModelConfig> ?? {}),
+        ...((existingProvider.models as Record<string, ApertureModelConfig>) ??
+          {}),
       };
-      const configuredApiKey = existingProvider.options?.apiKey ?? baseProvider.options?.apiKey ?? apiKey;
-      const sdk = getProviderSDKConfig(group.protocol, baseUrl, typeof configuredApiKey === "string" ? configuredApiKey : apiKey);
+      const configuredApiKey =
+        existingProvider.options?.apiKey ??
+        baseProvider.options?.apiKey ??
+        apiKey;
+      const sdk = getProviderSDKConfig(
+        group.protocol,
+        baseUrl,
+        typeof configuredApiKey === "string" ? configuredApiKey : apiKey,
+      );
 
       config.provider[group.id] = {
         ...baseProvider,
         ...existingProvider,
-        npm: existingProvider.npm
-          ?? (group.protocol === "openai_chat" || group.protocol === "openai_responses" ? baseProvider.npm : undefined)
-          ?? sdk.npm,
+        npm:
+          existingProvider.npm ??
+          (group.protocol === "openai_chat" ||
+          group.protocol === "openai_responses"
+            ? baseProvider.npm
+            : undefined) ??
+          sdk.npm,
         name: existingProvider.name ?? group.name,
         options: {
           ...baseProvider.options,
@@ -920,11 +1149,23 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
 
       for (const model of models) {
         const existingModel = modelsObj[model.id] ?? {};
-        const routeModelID = getApertureRouteModelID(model, discoveredProviders);
-        const modelDefaults = getModelDefaults(model, modelsDevCatalog, discoveredProviders);
-        if (!modelDefaults.matchedModelsDev && !warnedModelsDevFallbacks.has(routeModelID)) {
+        const routeModelID = getApertureRouteModelID(
+          model,
+          discoveredProviders,
+        );
+        const modelDefaults = getModelDefaults(
+          model,
+          modelsDevCatalog,
+          discoveredProviders,
+        );
+        if (
+          !modelDefaults.matchedModelsDev &&
+          !warnedModelsDevFallbacks.has(routeModelID)
+        ) {
           warnedModelsDevFallbacks.add(routeModelID);
-          logger.warn(`[TailscaleAperture] Model ${routeModelID} could not be matched to Models.dev specs; using conservative defaults`);
+          logger.warn(
+            `[TailscaleAperture] Model ${routeModelID} could not be matched to Models.dev specs; using conservative defaults`,
+          );
         }
 
         modelsObj[model.id] = {
@@ -936,7 +1177,10 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
     }
 
     for (const providerID of Object.keys(config.provider)) {
-      if (providerID.startsWith("aperture-") && !modelsByProvider.has(providerID)) {
+      if (
+        providerID.startsWith("aperture-") &&
+        !modelsByProvider.has(providerID)
+      ) {
         delete config.provider[providerID];
       }
     }
@@ -950,7 +1194,9 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
   }
 
   function countProviderGroups(models: ApertureModel[]): number {
-    return new Set(models.map((model) => getProviderGroup(model, discoveredProviders).id)).size;
+    return new Set(
+      models.map((model) => getProviderGroup(model, discoveredProviders).id),
+    ).size;
   }
 
   async function loadModelsOnStartup(): Promise<ApertureModel[]> {
@@ -962,10 +1208,17 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
         return discoveredModels;
       }
 
-      logger.info(`[TailscaleAperture] Discovered ${discoveredModels.length} models from ${baseUrl}`);
+      logger.info(
+        `[TailscaleAperture] Discovered ${discoveredModels.length} models from ${baseUrl}`,
+      );
       const providerGroupCount = countProviderGroups(discoveredModels);
-      logger.info(`[TailscaleAperture] Registered ${providerGroupCount} Aperture provider groups for ${discoveredModels.length} discovered models`);
-      showMessage("success", `Registered ${discoveredModels.length} Aperture models across ${providerGroupCount} provider groups`);
+      logger.info(
+        `[TailscaleAperture] Registered ${providerGroupCount} Aperture provider groups for ${discoveredModels.length} discovered models`,
+      );
+      showMessage(
+        "success",
+        `Registered ${discoveredModels.length} Aperture models across ${providerGroupCount} provider groups`,
+      );
       return discoveredModels;
     } catch (error) {
       const errmsg = formatError(error);
@@ -985,7 +1238,9 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       return await loadModelsOnStartup();
     } finally {
       startupModelsDurationMs = Date.now() - startedAt;
-      logger.info(`[TailscaleAperture] Startup step Aperture model discovery finished in ${formatDuration(startupModelsDurationMs)}`);
+      logger.info(
+        `[TailscaleAperture] Startup step Aperture model discovery finished in ${formatDuration(startupModelsDurationMs)}`,
+      );
     }
   })();
 
@@ -999,12 +1254,16 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       const catalog = await loadModelsDevCatalog(modelsDevConfig, logger);
       modelsDevCatalog = catalog;
       if (catalog) {
-        logger.info(`[TailscaleAperture] Loaded Models.dev catalog with ${Object.keys(catalog).length} providers`);
+        logger.info(
+          `[TailscaleAperture] Loaded Models.dev catalog with ${Object.keys(catalog).length} providers`,
+        );
       }
       return catalog;
     } finally {
       startupModelsDevDurationMs = Date.now() - startedAt;
-      logger.info(`[TailscaleAperture] Startup step Models.dev catalog load finished in ${formatDuration(startupModelsDevDurationMs)}`);
+      logger.info(
+        `[TailscaleAperture] Startup step Models.dev catalog load finished in ${formatDuration(startupModelsDevDurationMs)}`,
+      );
     }
   })();
 
@@ -1015,7 +1274,9 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
         await Promise.all([startupModels, startupModelsDevCatalog]);
         const configWaitDurationMs = Date.now() - configWaitStartedAt;
         const startupDurationMs = Date.now() - startupStartedAt;
-        logger.info(`[TailscaleAperture] Startup finished in ${formatDuration(startupDurationMs)} (Aperture models: ${formatDuration(startupModelsDurationMs)}, Models.dev catalog: ${formatDuration(startupModelsDevDurationMs)}, config wait: ${formatDuration(configWaitDurationMs)})`);
+        logger.info(
+          `[TailscaleAperture] Startup finished in ${formatDuration(startupDurationMs)} (Aperture models: ${formatDuration(startupModelsDurationMs)}, Models.dev catalog: ${formatDuration(startupModelsDevDurationMs)}, config wait: ${formatDuration(configWaitDurationMs)})`,
+        );
         mutateConfig(config);
       } catch (error) {
         logger.error("[TailscaleAperture] Failed to register models:", error);
@@ -1043,15 +1304,24 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
       list_aperture_models: tool({
         description: "List available models from Tailscale Aperture",
         args: {
-          refresh: tool.schema.boolean().optional().describe("Refresh the cached Aperture model list before returning it"),
+          refresh: tool.schema
+            .boolean()
+            .optional()
+            .describe(
+              "Refresh the cached Aperture model list before returning it",
+            ),
         },
         async execute(args) {
           try {
             const models = await loadModels(args.refresh ?? false);
-            return JSON.stringify({
-              models,
-              count: models.length,
-            }, null, 2);
+            return JSON.stringify(
+              {
+                models,
+                count: models.length,
+              },
+              null,
+              2,
+            );
           } catch (error) {
             return JSON.stringify({ error: String(error) });
           }
@@ -1062,14 +1332,21 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
         description: "Get details for a specific Aperture model",
         args: {
           modelId: tool.schema.string().describe("Model ID"),
-          refresh: tool.schema.boolean().optional().describe("Refresh the cached Aperture model list before looking up the model"),
+          refresh: tool.schema
+            .boolean()
+            .optional()
+            .describe(
+              "Refresh the cached Aperture model list before looking up the model",
+            ),
         },
         async execute(args) {
           try {
             const models = await loadModels(args.refresh ?? false);
-            const model = models.find(m => m.id === args.modelId);
+            const model = models.find((m) => m.id === args.modelId);
             if (!model) {
-              return JSON.stringify({ error: `Model ${args.modelId} not found` });
+              return JSON.stringify({
+                error: `Model ${args.modelId} not found`,
+              });
             }
             return JSON.stringify({ model }, null, 2);
           } catch (error) {
