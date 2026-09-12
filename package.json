@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsc",
     "test": "pnpm build && node --experimental-test-coverage --test test/*.test.mjs",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "lint": "biome lint"
   },
   "keywords": [
     "opencode",
@@ -35,10 +36,11 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@opencode-ai/plugin": "^1.18.11"
+    "@opencode-ai/plugin": "^1.18.30"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
+    "@biomejs/biome": "^2.5.13",
+    "@types/node": "^22.20.2",
     "typescript": "^7.0.2"
   },
   "peerDependencies": {
