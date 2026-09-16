@@ -2,53 +2,58 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import plugin, { TailscaleAperturePlugin } from "../dist/index.js";
 
-// Same empty records and upsert semantics as OpenCode's v2 CatalogDraft.
-function createCatalog() {
+// Same empty records and upsert semantics as OpenCode v2's ProviderEditor.
+function createProviders() {
   const records = new Map();
-  const catalog = {
-    provider: {
-      get: (id) => records.get(id),
-      update(id, update) {
-        if (!records.has(id))
-          records.set(id, {
+  const editor = {
+    get: (id) => records.get(id),
+    update(id, update) {
+      if (!records.has(id))
+        records.set(id, {
+          provider: { id, name: id, activation: "auto", package: "" },
+          models: new Map(),
+        });
+      update(records.get(id).provider);
+    },
+    models: {
+      update(providerID, id, update) {
+        if (!records.has(providerID))
+          records.set(providerID, {
             provider: {
-              id,
-              name: id,
-              api: { type: "native", settings: {} },
-              request: { headers: {}, body: {} },
+              id: providerID,
+              name: providerID,
+              activation: "auto",
+              package: "",
             },
             models: new Map(),
           });
-        update(records.get(id).provider);
-      },
-    },
-    model: {
-      get: (providerID, id) => records.get(providerID)?.models.get(id),
-      update(providerID, id, update) {
         const models = records.get(providerID).models;
         if (!models.has(id))
           models.set(id, {
             id,
+            modelID: id,
             providerID,
             name: id,
-            api: { id, type: "native", settings: {} },
-            capabilities: { tools: false, input: [], output: [] },
-            request: { headers: {}, body: {} },
+            capabilities: {
+              tools: true,
+              input: ["text", "image"],
+              output: ["text"],
+            },
             variants: [],
             time: { released: 0 },
             cost: [],
             status: "active",
             enabled: true,
-            limit: { context: 0, output: 0 },
+            limit: { context: 200_000, output: 32_000 },
           });
         update(models.get(id));
       },
     },
   };
-  return catalog;
+  return { editor, records };
 }
 
-test("one package supports v1 server hooks and v2 catalog and request hooks", async (t) => {
+test("one package supports v1 server hooks and v2 provider transforms", async (t) => {
   assert.equal(plugin.server, TailscaleAperturePlugin);
   assert.equal(plugin.id, "opencode-plugin-tsaperture");
   const protocols = [
@@ -142,11 +147,10 @@ test("one package supports v1 server hooks and v2 catalog and request hooks", as
   );
 
   let transform;
-  let languageHook;
   let reloaded = false;
   await plugin.setup({
     options,
-    catalog: {
+    provider: {
       transform: async (callback) => {
         transform = callback;
       },
@@ -154,26 +158,25 @@ test("one package supports v1 server hooks and v2 catalog and request hooks", as
         reloaded = true;
       },
     },
-    aisdk: {
-      language: async (callback) => {
-        languageHook = callback;
-      },
-    },
   });
-  assert.equal(reloaded, true, "publish catalog after asynchronous discovery");
-  const catalog = createCatalog();
-  await transform(catalog);
+  assert.equal(
+    reloaded,
+    true,
+    "publish providers after asynchronous discovery",
+  );
+  const { editor: providers, records } = createProviders();
+  await transform(providers);
   for (const [id] of protocols) {
     const providerID = `aperture-${id}`;
     const expected = config.provider[providerID];
-    const { provider, models } = catalog.provider.get(providerID);
-    assert.equal(provider.api.package, expected.npm, id);
-    assert.equal(provider.api.url, expected.options.baseURL, id);
-    assert.equal(provider.api.settings.apiKey, "test-key", id);
-    if (id === "bedrock")
-      assert.equal(provider.api.settings.region, "us-east-1");
+    const { provider, models } = records.get(providerID);
+    assert.equal(provider.package, `aisdk:${expected.npm}`, id);
+    assert.equal(provider.settings.baseURL, expected.options.baseURL, id);
+    assert.equal(provider.settings.apiKey, "test-key", id);
+    assert.equal(provider.activation, "enabled", id);
+    if (id === "bedrock") assert.equal(provider.settings.region, "us-east-1");
     const model = models.get("model");
-    assert.equal(model.api.id, expected.models.model.id, id);
+    assert.equal(model.modelID, expected.models.model.id, id);
     assert.deepEqual(model.limit, expected.models.model.limit, id);
     assert.deepEqual(model.capabilities, {
       tools: true,
@@ -214,98 +217,50 @@ test("one package supports v1 server hooks and v2 catalog and request hooks", as
         : undefined,
     );
   }
-  await transform(catalog);
-  assert.equal(catalog.model.get("aperture-chat", "model").variants.length, 2);
+  await transform(providers);
+  assert.equal(
+    records.get("aperture-chat").models.get("model").variants.length,
+    2,
+  );
 
-  const overrides = createCatalog();
-  overrides.provider.update("aperture-chat", (provider) => {
+  const { editor: overrides, records: overridden } = createProviders();
+  overrides.update("aperture-chat", (provider) => {
     provider.name = "My Aperture";
-    provider.api = {
-      type: "aisdk",
-      package: "custom-sdk",
-      url: "https://custom.example",
-      settings: { apiKey: "custom-key" },
+    provider.package = "aisdk:custom-sdk";
+    provider.settings = {
+      baseURL: "https://custom.example",
+      apiKey: "custom-key",
     };
   });
-  overrides.model.update("aperture-chat", "model", (model) => {
+  overrides.models.update("aperture-chat", "model", (model) => {
     model.name = "My Model";
-    model.api.id = "custom/model";
+    model.modelID = "custom/model";
     model.enabled = false;
     model.limit.output = 100;
-    model.request.body = { temperature: 0.2 };
+    model.body = { temperature: 0.2 };
     model.variants = [
       { id: "low", headers: { custom: "value" }, body: { custom: true } },
     ];
   });
   await transform(overrides);
-  const custom = overrides.model.get("aperture-chat", "model");
+  const custom = overridden.get("aperture-chat").models.get("model");
+  assert.equal(overridden.get("aperture-chat").provider.name, "My Aperture");
   assert.equal(
-    overrides.provider.get("aperture-chat").provider.name,
-    "My Aperture",
-  );
-  assert.equal(
-    overrides.provider.get("aperture-chat").provider.api.settings.apiKey,
+    overridden.get("aperture-chat").provider.settings.apiKey,
     "custom-key",
   );
+  assert.equal(
+    overridden.get("aperture-chat").provider.package,
+    "aisdk:custom-sdk",
+  );
   assert.equal(custom.name, "My Model");
-  assert.equal(custom.api.id, "custom/model");
+  assert.equal(custom.modelID, "custom/model");
   assert.equal(custom.enabled, false);
   assert.deepEqual(custom.limit, {
     context: 200_000,
     input: 180_000,
     output: 100,
   });
-  assert.deepEqual(custom.request.body, { temperature: 0.2 });
+  assert.deepEqual(custom.body, { temperature: 0.2 });
   assert.deepEqual(custom.variants[0].body, { custom: true });
-
-  const language = {
-    specificationVersion: "v3",
-    provider: "mock",
-    modelId: "model",
-    supportedUrls: {},
-    doGenerate(options) {
-      assert.equal(this, language);
-      return options;
-    },
-    doStream(options) {
-      assert.equal(this, language);
-      return options;
-    },
-  };
-  const event = {
-    model: catalog.model.get("aperture-opencode-go-x-responses", "model"),
-    language,
-  };
-  await languageHook(event);
-  for (const [method, session] of [
-    ["doGenerate", "session-a"],
-    ["doStream", "session-b"],
-  ]) {
-    const input = {
-      headers: {
-        "X-Session-Id": session,
-        "x-opencode-request": "existing",
-        custom: "value",
-      },
-    };
-    const result = await event.language[method](input);
-    assert.equal(result.headers["x-opencode-session"], session);
-    assert.equal(result.headers["x-opencode-request"], "existing");
-    assert.equal(
-      result.headers["x-opencode-client"],
-      process.env.OPENCODE_CLIENT || "cli",
-    );
-    assert.equal(result.headers.custom, "value");
-    assert.equal(input.headers["x-opencode-session"], undefined);
-  }
-  assert.equal(
-    (await event.language.doGenerate({})).headers["x-opencode-request"],
-    undefined,
-  );
-  const unrelated = {
-    model: catalog.model.get("aperture-chat", "model"),
-    language,
-  };
-  await languageHook(unrelated);
-  assert.equal(unrelated.language, language);
 });

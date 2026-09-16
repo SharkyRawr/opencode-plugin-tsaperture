@@ -11,10 +11,7 @@ import type {
   PluginOptions,
 } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
-import type {
-  CatalogDraft,
-  Plugin as PluginV2,
-} from "@opencode-ai/plugin/v2/promise";
+import type { Plugin as PluginV2 } from "@opencode/plugin";
 
 interface ApertureModel {
   id: string;
@@ -1381,7 +1378,7 @@ export default {
   id: "opencode-plugin-tsaperture",
   server: TailscaleAperturePlugin,
   async setup(context) {
-    // The v2 promise API has no logging client or toast/tool registration hooks.
+    // Keep v2 diagnostics independent of the v1 SDK client and toast hooks.
     const logger: Logger = {
       info: (message, ...args) => console.error(message, ...args),
       warn: (message, ...args) => console.error(message, ...args),
@@ -1391,135 +1388,126 @@ export default {
     const hooks = await createApertureHooks(context.options, logger);
     const config: Config = {};
     await hooks.config?.(config);
-    await context.catalog.transform((catalog) => {
+    await context.provider.transform((providers) => {
       for (const [providerID, provider] of Object.entries(
         config.provider ?? {},
       )) {
-        const { baseURL, ...settings } = provider.options ?? {};
-        catalog.provider.update(providerID, (draft) => {
+        const existingProvider = providers.get(providerID);
+        const npm = provider.npm ?? "@ai-sdk/openai-compatible";
+        providers.update(providerID, (draft) => {
           if (draft.name === providerID)
             draft.name = provider.name ?? draft.name;
-          draft.api = {
-            type: "aisdk",
-            package:
-              draft.api.type === "aisdk"
-                ? draft.api.package
-                : (provider.npm ?? "@ai-sdk/openai-compatible"),
-            url:
-              draft.api.url ??
-              (typeof baseURL === "string" ? baseURL : undefined),
-            settings: { ...settings, ...draft.api.settings },
-          };
+          if (!existingProvider) draft.activation = "enabled";
+          draft.package ||= npm.startsWith("aisdk:") ? npm : `aisdk:${npm}`;
+          draft.settings = { ...provider.options, ...draft.settings };
         });
         for (const [modelID, model] of Object.entries(provider.models ?? {})) {
-          applyV2Model(catalog, providerID, modelID, model);
+          const isNew = !providers.get(providerID)?.models.has(modelID);
+          providers.models.update(providerID, modelID, (draft) => {
+            applyV2Model(
+              draft as unknown as V2ModelDraft,
+              modelID,
+              model,
+              npm,
+              isNew,
+            );
+          });
         }
       }
     });
-    await context.aisdk.language((event) => {
-      const provider = config.provider?.[event.model.providerID];
-      if (
-        !provider ||
-        !requiresOpenCodeSessionHeader(event.model.api.id.split("/", 1)[0])
-      )
-        return;
-      const language =
-        event.language ?? event.sdk.languageModel(event.model.api.id);
-      // Read session context per call: language instances are cached across sessions.
-      const headers = (input: Record<string, string | undefined> = {}) => {
-        const sessionID = Object.entries(input).find(
-          ([key]) => key.toLowerCase() === "x-session-id",
-        )?.[1];
-        // The v2 request has no user-message ID, so keep any supplied request header.
-        return {
-          ...(sessionID ? { "x-opencode-session": sessionID } : {}),
-          "x-opencode-client": process.env.OPENCODE_CLIENT || "cli",
-          ...input,
-        };
-      };
-      event.language = {
-        specificationVersion: language.specificationVersion,
-        provider: language.provider,
-        modelId: language.modelId,
-        supportedUrls: language.supportedUrls,
-        doGenerate: (options) =>
-          language.doGenerate({
-            ...options,
-            headers: headers(options.headers),
-          }),
-        doStream: (options) =>
-          language.doStream({ ...options, headers: headers(options.headers) }),
-      };
-    });
-    // Async discovery can finish after the host's initial catalog batch has flushed.
-    await context.catalog.reload();
+    // Async discovery can finish after the host's initial provider batch has flushed.
+    await context.provider.reload();
   },
-} satisfies PluginModule & PluginV2;
+} satisfies PluginModule & PluginV2.Plugin;
+
+type V2ModelDraft = {
+  modelID: string;
+  name: string;
+  family?: string;
+  capabilities: { tools: boolean; input: string[]; output: string[] };
+  limit: { context: number; input?: number; output: number };
+  status: "active" | "alpha" | "beta" | "deprecated";
+  enabled: boolean;
+  time: { released: number };
+  cost: Array<{
+    tier?: { type: "context"; size: number };
+    input: number;
+    output: number;
+    cache: { read: number; write: number };
+  }>;
+  variants: Array<{
+    id: string;
+    headers?: Record<string, string>;
+    body?: Record<string, unknown>;
+  }>;
+};
 
 function applyV2Model(
-  catalog: CatalogDraft,
-  providerID: string,
+  model: V2ModelDraft,
   modelID: string,
   config: ApertureModelConfig,
+  npm: string,
+  isNew: boolean,
 ): void {
-  catalog.model.update(providerID, modelID, (model) => {
-    // V2 drafts include empty defaults; fill these while retaining authored overrides.
-    if (model.api.id === modelID) model.api.id = config.id ?? modelID;
-    if (model.name === modelID) model.name = config.name ?? modelID;
-    model.family ??= config.family;
-    if (!model.capabilities.input.length && !model.capabilities.output.length) {
-      model.capabilities = {
-        tools: config.tool_call ?? true,
-        input: config.modalities?.input ?? ["text"],
-        output: config.modalities?.output ?? ["text"],
-      };
-    }
-    model.limit = {
-      context: model.limit.context || config.limit?.context || 128_000,
-      input: model.limit.input ?? config.limit?.input,
-      output: model.limit.output || config.limit?.output || 8_192,
+  if (isNew || model.modelID === modelID) model.modelID = config.id ?? modelID;
+  if (isNew || model.name === modelID) model.name = config.name ?? modelID;
+  model.family ??= config.family;
+  if (
+    isNew ||
+    (!model.capabilities.input.length && !model.capabilities.output.length)
+  ) {
+    model.capabilities = {
+      tools: config.tool_call ?? true,
+      input: config.modalities?.input ?? ["text"],
+      output: config.modalities?.output ?? ["text"],
     };
-    if (model.status === "active") model.status = config.status ?? "active";
-    if (model.status === "deprecated") model.enabled = false;
-    model.time.released ||= Date.parse(config.release_date ?? "") || 0;
-    const cost = config.cost;
-    if (!model.cost.length)
-      model.cost = [
-        {
-          input: cost?.input ?? 0,
-          output: cost?.output ?? 0,
-          cache: { read: cost?.cache_read ?? 0, write: cost?.cache_write ?? 0 },
-        },
-        ...(cost?.context_over_200k
-          ? [
-              {
-                tier: { type: "context" as const, size: 200_000 },
-                input: cost.context_over_200k.input,
-                output: cost.context_over_200k.output,
-                cache: {
-                  read: cost.context_over_200k.cache_read ?? 0,
-                  write: cost.context_over_200k.cache_write ?? 0,
-                },
+  }
+  model.limit = {
+    context:
+      (isNew ? config.limit?.context : model.limit.context) ||
+      config.limit?.context ||
+      128_000,
+    input: model.limit.input ?? config.limit?.input,
+    output:
+      (isNew ? config.limit?.output : model.limit.output) ||
+      config.limit?.output ||
+      8_192,
+  };
+  if (isNew || model.status === "active")
+    model.status = config.status ?? "active";
+  if (model.status === "deprecated") model.enabled = false;
+  model.time.released ||= Date.parse(config.release_date ?? "") || 0;
+  const cost = config.cost;
+  if (isNew || !model.cost.length)
+    model.cost = [
+      {
+        input: cost?.input ?? 0,
+        output: cost?.output ?? 0,
+        cache: { read: cost?.cache_read ?? 0, write: cost?.cache_write ?? 0 },
+      },
+      ...(cost?.context_over_200k
+        ? [
+            {
+              tier: { type: "context" as const, size: 200_000 },
+              input: cost.context_over_200k.input,
+              output: cost.context_over_200k.output,
+              cache: {
+                read: cost.context_over_200k.cache_read ?? 0,
+                write: cost.context_over_200k.cache_write ?? 0,
               },
-            ]
-          : []),
-      ];
-    const api = catalog.provider.get(providerID)?.provider.api;
-    const existingVariants = new Set(
-      model.variants.map((variant) => variant.id),
-    );
-    model.variants.push(
-      ...Object.keys(config.variants ?? {})
-        .filter((id) => !existingVariants.has(id))
-        .flatMap((id) => {
-          const body = getV2ReasoningBody(
-            api?.type === "aisdk" ? api.package : undefined,
-            id,
-          );
-          return body ? [{ id, headers: {}, body }] : [];
-        }),
-    );
-  });
+            },
+          ]
+        : []),
+    ];
+  const existingVariants = new Set(model.variants.map((variant) => variant.id));
+  model.variants.push(
+    ...Object.keys(config.variants ?? {})
+      .filter((id) => !existingVariants.has(id))
+      .flatMap((id) => {
+        const body = getV2ReasoningBody(npm, id);
+        return body ? [{ id, headers: {}, body }] : [];
+      }),
+  );
 }
 
 function getV2ReasoningBody(

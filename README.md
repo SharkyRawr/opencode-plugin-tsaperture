@@ -10,20 +10,18 @@ The same package supports OpenCode v1 (1.4.0 or newer) and the new v2
 plugin API. The default export provides v1 `server` and v2 `setup` entry
 points; direct callers can still import the named `TailscaleAperturePlugin`
 function for v1. The v2 adapter targets the API shipped in
-`@opencode-ai/plugin` 1.18.30.
+`@opencode/plugin` 2.0.5.
 
 Both entry points share model discovery, provider grouping, protocol selection,
-and Models.dev enrichment. V2 registers replayable catalog transforms and maps
+and Models.dev enrichment. V2 registers replayable provider transforms and maps
 limits, modalities, costs, release dates, and reasoning variants to its model
 schema. Existing catalog settings take precedence over discovery defaults.
 Effort variants use each protocol's wire format; they are not generated for
 Bedrock or custom SDKs, which have no common effort parameter.
 
-The current v2 promise API does not expose custom-tool or toast hooks, so the
-two model lookup tools below remain v1-only and v2 diagnostics go to stderr.
-V2 forwards session and client headers for Aperture's OpenCode routes. It
-preserves an existing request header but cannot generate `x-opencode-request`
-without the user-message ID that v1 supplies. V2's model schema also has no
+The two model lookup tools remain v1-only and v2 diagnostics go to stderr.
+OpenCode v2 supplies project, session, and client headers to model requests.
+V2's model schema also has no
 equivalent for v1's reasoning, temperature, attachment, or interleaved flags;
 input modalities still describe supported attachments.
 

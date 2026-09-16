@@ -8,7 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-test("installed OpenCode loads both entry points and publishes the v2 catalog after discovery", {
+test("installed OpenCode loads v1 and publishes v2 providers when a v2 binary is supplied", {
   timeout: 30_000,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "tsaperture-runtime-"));
@@ -59,7 +59,6 @@ test("installed OpenCode loads both entry points and publishes the v2 catalog af
       XDG_DATA_HOME: join(directory, "data"),
       XDG_STATE_HOME: join(directory, "state"),
       OPENCODE_CONFIG_DIR: join(directory, "config", "opencode"),
-      OPENCODE_PURE: "0",
       OPENCODE_DISABLE_MODELS_FETCH: "1",
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_MODELS_PATH: join(directory, "catalog.json"),
@@ -91,6 +90,10 @@ test("installed OpenCode loads both entry points and publishes the v2 catalog af
     assert.equal(code, 0, output);
     assert.match(output, /aperture-smoke\/test-model/);
 
+    const v2Binary = process.env.OPENCODE_V2_BIN;
+    if (!v2Binary) return;
+    const v2Entry = fileURLToPath(new URL("../dist", import.meta.url));
+
     // Reserve an available port rather than using OpenCode's default port.
     const portServer = createServer();
     portServer.listen(0, "127.0.0.1");
@@ -98,11 +101,11 @@ test("installed OpenCode loads both entry points and publishes the v2 catalog af
     const port = portServer.address().port;
     await new Promise((resolve) => portServer.close(resolve));
     await writeFile(
-      join(directory, "opencode.json"),
-      JSON.stringify({ plugins: [{ package: entry, options }] }),
+      join(env.OPENCODE_CONFIG_DIR, "opencode.json"),
+      JSON.stringify({ plugins: [{ package: v2Entry, options }] }),
     );
     child = spawn(
-      binary,
+      v2Binary,
       ["serve", "--hostname", "127.0.0.1", "--port", String(port)],
       { cwd: directory, env, timeout: 15_000 },
     );
@@ -138,11 +141,10 @@ test("installed OpenCode loads both entry points and publishes the v2 catalog af
       }
     }
     assert.ok(model, output);
-    assert.equal(model.api.id, "smoke/test-model");
-    assert.equal(model.api.type, "aisdk");
-    assert.equal(model.api.package, "@ai-sdk/openai-compatible");
-    assert.equal(model.api.url, `${options.baseUrl}/v1`);
-    assert.equal(model.api.settings.apiKey, "smoke-test");
+    assert.equal(model.modelID, "smoke/test-model");
+    assert.equal(model.package, "@opencode/ai/providers/openai-compatible");
+    assert.equal(model.settings.baseURL, `${options.baseUrl}/v1`);
+    assert.equal(model.settings.apiKey, "smoke-test");
   } finally {
     if (child?.exitCode === null) {
       child.kill();
