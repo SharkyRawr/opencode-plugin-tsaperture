@@ -589,6 +589,9 @@ export const TailscaleAperturePlugin = async (input, options) => {
         tuiReady = true;
         void flushToasts();
     }
+    return createApertureHooks(options, logger, showMessage, markTuiReady);
+};
+async function createApertureHooks(options, logger, showMessage = () => { }, markTuiReady = () => { }) {
     const fileConfig = await loadApertureConfig(logger);
     const rawBaseUrl = options?.baseUrl ||
         process.env.APERTURE_BASE_URL ||
@@ -896,6 +899,147 @@ export const TailscaleAperturePlugin = async (input, options) => {
             }),
         },
     };
+}
+export default {
+    id: "opencode-plugin-tsaperture",
+    server: TailscaleAperturePlugin,
+    async setup(context) {
+        // The v2 promise API has no logging client or toast/tool registration hooks.
+        const logger = {
+            info: (message, ...args) => console.error(message, ...args),
+            warn: (message, ...args) => console.error(message, ...args),
+            error: (message, ...args) => console.error(message, ...args),
+            debug: () => { },
+        };
+        const hooks = await createApertureHooks(context.options, logger);
+        const config = {};
+        await hooks.config?.(config);
+        await context.catalog.transform((catalog) => {
+            for (const [providerID, provider] of Object.entries(config.provider ?? {})) {
+                const { baseURL, ...settings } = provider.options ?? {};
+                catalog.provider.update(providerID, (draft) => {
+                    if (draft.name === providerID)
+                        draft.name = provider.name ?? draft.name;
+                    draft.api = {
+                        type: "aisdk",
+                        package: draft.api.type === "aisdk"
+                            ? draft.api.package
+                            : (provider.npm ?? "@ai-sdk/openai-compatible"),
+                        url: draft.api.url ??
+                            (typeof baseURL === "string" ? baseURL : undefined),
+                        settings: { ...settings, ...draft.api.settings },
+                    };
+                });
+                for (const [modelID, model] of Object.entries(provider.models ?? {})) {
+                    applyV2Model(catalog, providerID, modelID, model);
+                }
+            }
+        });
+        await context.aisdk.language((event) => {
+            const provider = config.provider?.[event.model.providerID];
+            if (!provider ||
+                !requiresOpenCodeSessionHeader(event.model.api.id.split("/", 1)[0]))
+                return;
+            const language = event.language ?? event.sdk.languageModel(event.model.api.id);
+            // Read session context per call: language instances are cached across sessions.
+            const headers = (input = {}) => {
+                const sessionID = Object.entries(input).find(([key]) => key.toLowerCase() === "x-session-id")?.[1];
+                // The v2 request has no user-message ID, so keep any supplied request header.
+                return {
+                    ...(sessionID ? { "x-opencode-session": sessionID } : {}),
+                    "x-opencode-client": process.env.OPENCODE_CLIENT || "cli",
+                    ...input,
+                };
+            };
+            event.language = {
+                specificationVersion: language.specificationVersion,
+                provider: language.provider,
+                modelId: language.modelId,
+                supportedUrls: language.supportedUrls,
+                doGenerate: (options) => language.doGenerate({
+                    ...options,
+                    headers: headers(options.headers),
+                }),
+                doStream: (options) => language.doStream({ ...options, headers: headers(options.headers) }),
+            };
+        });
+        // Async discovery can finish after the host's initial catalog batch has flushed.
+        await context.catalog.reload();
+    },
 };
-export default TailscaleAperturePlugin;
+function applyV2Model(catalog, providerID, modelID, config) {
+    catalog.model.update(providerID, modelID, (model) => {
+        // V2 drafts include empty defaults; fill these while retaining authored overrides.
+        if (model.api.id === modelID)
+            model.api.id = config.id ?? modelID;
+        if (model.name === modelID)
+            model.name = config.name ?? modelID;
+        model.family ??= config.family;
+        if (!model.capabilities.input.length && !model.capabilities.output.length) {
+            model.capabilities = {
+                tools: config.tool_call ?? true,
+                input: config.modalities?.input ?? ["text"],
+                output: config.modalities?.output ?? ["text"],
+            };
+        }
+        model.limit = {
+            context: model.limit.context || config.limit?.context || 128_000,
+            input: model.limit.input ?? config.limit?.input,
+            output: model.limit.output || config.limit?.output || 8_192,
+        };
+        if (model.status === "active")
+            model.status = config.status ?? "active";
+        if (model.status === "deprecated")
+            model.enabled = false;
+        model.time.released ||= Date.parse(config.release_date ?? "") || 0;
+        const cost = config.cost;
+        if (!model.cost.length)
+            model.cost = [
+                {
+                    input: cost?.input ?? 0,
+                    output: cost?.output ?? 0,
+                    cache: { read: cost?.cache_read ?? 0, write: cost?.cache_write ?? 0 },
+                },
+                ...(cost?.context_over_200k
+                    ? [
+                        {
+                            tier: { type: "context", size: 200_000 },
+                            input: cost.context_over_200k.input,
+                            output: cost.context_over_200k.output,
+                            cache: {
+                                read: cost.context_over_200k.cache_read ?? 0,
+                                write: cost.context_over_200k.cache_write ?? 0,
+                            },
+                        },
+                    ]
+                    : []),
+            ];
+        const api = catalog.provider.get(providerID)?.provider.api;
+        const existingVariants = new Set(model.variants.map((variant) => variant.id));
+        model.variants.push(...Object.keys(config.variants ?? {})
+            .filter((id) => !existingVariants.has(id))
+            .flatMap((id) => {
+            const body = getV2ReasoningBody(api?.type === "aisdk" ? api.package : undefined, id);
+            return body ? [{ id, headers: {}, body }] : [];
+        }));
+    });
+}
+function getV2ReasoningBody(npm, effort) {
+    // V2 request bodies use wire fields, unlike v1's AI SDK option names.
+    switch (npm) {
+        case "@ai-sdk/openai":
+            return { reasoning: { effort } };
+        case "@ai-sdk/openai-compatible":
+            return { reasoning_effort: effort };
+        case "@ai-sdk/anthropic":
+            return { output_config: { effort } };
+        case "@ai-sdk/google":
+        case "@ai-sdk/google-vertex":
+            return {
+                generationConfig: { thinkingConfig: { thinkingLevel: effort } },
+            };
+        default:
+            return undefined;
+    }
+}
 //# sourceMappingURL=index.js.map
