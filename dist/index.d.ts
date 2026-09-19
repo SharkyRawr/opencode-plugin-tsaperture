@@ -1,5 +1,5 @@
-import type { Plugin } from "@opencode-ai/plugin";
 import type { Plugin as PluginV2 } from "@opencode/plugin";
+import type { Plugin } from "@opencode-ai/plugin";
 export declare const TailscaleAperturePlugin: Plugin;
 declare const _default: {
     id: string;

@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { platform } from "node:process";
+import type { Plugin as PluginV2 } from "@opencode/plugin";
 import type {
   Config,
   Hooks,
@@ -11,7 +12,6 @@ import type {
   PluginOptions,
 } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
-import type { Plugin as PluginV2 } from "@opencode/plugin";
 
 interface ApertureModel {
   id: string;
