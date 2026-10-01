@@ -106,34 +106,62 @@ type ApertureModelConfig = {
 
 type ToastVariant = "success" | "warning" | "error";
 
-type ModelsDevModel = {
-  id: string;
-  name: string;
-  family?: string;
-  release_date?: string;
-  attachment?: boolean;
-  status?: "alpha" | "beta" | "deprecated";
-  cost?: ModelCost;
-  limit?: {
-    context: number;
-    input?: number;
-    output: number;
-  };
-  reasoning?: boolean;
-  temperature?: boolean;
-  tool_call?: boolean;
-  modalities?: {
-    input: Array<"text" | "audio" | "image" | "video" | "pdf">;
-    output: Array<"text" | "audio" | "image" | "video" | "pdf">;
-  };
-  interleaved?: InterleavedConfig;
-  reasoning_options?: Array<{
-    type: "effort" | "toggle" | "budget_tokens" | string;
-    values?: string[];
-    min?: number;
-    max?: number;
-  }>;
-};
+const catalogNumber = tool.schema.number().finite().nonnegative();
+const catalogCost = tool.schema.object({
+  input: catalogNumber,
+  output: catalogNumber,
+  cache_read: catalogNumber.optional(),
+  cache_write: catalogNumber.optional(),
+});
+const catalogModalities = tool.schema.array(
+  tool.schema.enum(["text", "audio", "image", "video", "pdf"]),
+);
+const catalogModel = tool.schema.object({
+  id: tool.schema.string(),
+  name: tool.schema.string(),
+  family: tool.schema.string().optional(),
+  release_date: tool.schema.string().optional(),
+  attachment: tool.schema.boolean().optional(),
+  status: tool.schema.enum(["alpha", "beta", "deprecated"]).optional(),
+  cost: catalogCost
+    .extend({ context_over_200k: catalogCost.optional() })
+    .optional(),
+  limit: tool.schema
+    .object({
+      context: catalogNumber,
+      input: catalogNumber.optional(),
+      output: catalogNumber,
+    })
+    .optional(),
+  reasoning: tool.schema.boolean().optional(),
+  temperature: tool.schema.boolean().optional(),
+  tool_call: tool.schema.boolean().optional(),
+  modalities: tool.schema
+    .object({
+      input: catalogModalities,
+      output: catalogModalities,
+    })
+    .optional(),
+  interleaved: tool.schema
+    .union([
+      tool.schema.literal(true),
+      tool.schema.object({
+        field: tool.schema.enum(["reasoning_content", "reasoning_details"]),
+      }),
+    ])
+    .optional(),
+  reasoning_options: tool.schema
+    .array(
+      tool.schema.object({
+        type: tool.schema.string(),
+        values: tool.schema.array(tool.schema.string()).optional(),
+        min: catalogNumber.optional(),
+        max: catalogNumber.optional(),
+      }),
+    )
+    .optional(),
+});
+type ModelsDevModel = ReturnType<typeof catalogModel.parse>;
 
 type ModelsDevProvider = {
   id: string;
@@ -145,11 +173,24 @@ type ModelsDevProvider = {
 
 type ModelsDevCatalog = Record<string, ModelsDevProvider>;
 
+const catalogRecord = tool.schema.record(
+  tool.schema.string(),
+  tool.schema.unknown(),
+);
+const catalogProvider = tool.schema.object({
+  id: tool.schema.string(),
+  name: tool.schema.string(),
+  npm: tool.schema.string().optional(),
+  api: tool.schema.string().optional(),
+  models: catalogRecord,
+});
+
 type ApertureProtocol =
   | "openai_responses"
   | "anthropic_messages"
   | "openai_chat"
   | "google_vertex"
+  | "google_vertex_anthropic"
   | "bedrock"
   | "gemini_generate_content";
 
@@ -175,21 +216,6 @@ type ApertureProviderGroup = {
   routeProviderID?: string;
   protocol: ApertureProtocol;
 };
-
-function slugifyProviderSegment(value: string): string {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return normalized || "default";
-}
-
-function getProviderDisplayName(providerID: string): string {
-  const slug = slugifyProviderSegment(providerID);
-  return providerID.trim() || slug;
-}
 
 function normalizeModelLookup(value: string): string {
   return value
@@ -287,11 +313,8 @@ function getApertureProtocol(
   if (compatibility?.openai_responses) return "openai_responses";
   if (compatibility?.anthropic_messages) return "anthropic_messages";
   if (compatibility?.openai_chat) return "openai_chat";
-  if (
-    compatibility?.google_generate_content ||
-    compatibility?.google_raw_predict
-  )
-    return "google_vertex";
+  if (compatibility?.google_generate_content) return "google_vertex";
+  if (compatibility?.google_raw_predict) return "google_vertex_anthropic";
   if (compatibility?.bedrock_model_invoke || compatibility?.bedrock_converse)
     return "bedrock";
   if (compatibility?.gemini_generate_content) return "gemini_generate_content";
@@ -304,10 +327,9 @@ function getProviderGroup(
 ): ApertureProviderGroup {
   const providerID = model.metadata?.provider?.id?.trim();
   const providerName = model.metadata?.provider?.name?.trim();
-  const providerSegment = providerName || providerID;
   const routeProviderID = providerID || providerName;
 
-  if (!providerSegment || !routeProviderID) {
+  if (!routeProviderID) {
     return {
       id: "aperture",
       name: "Aperture",
@@ -320,8 +342,8 @@ function getProviderGroup(
   );
 
   return {
-    id: `aperture-${slugifyProviderSegment(providerSegment)}`,
-    name: `Aperture/${providerName || getProviderDisplayName(providerSegment)}`,
+    id: `aperture-${encodeURIComponent(routeProviderID)}`,
+    name: `Aperture/${providerName || routeProviderID}`,
     routeProviderID,
     protocol,
   };
@@ -354,7 +376,7 @@ function getProviderSDKConfig(
   apiKey: string,
 ): {
   npm: string;
-  options: Record<string, string>;
+  options: Record<string, unknown>;
 } {
   const key = apiKey || "not-required";
   switch (protocol) {
@@ -380,6 +402,15 @@ function getProviderSDKConfig(
         options: {
           baseURL: `${baseUrl}/v1/projects/_aperture_auto_vertex_project_id_/locations/_aperture_auto_vertex_region_/publishers/google`,
           apiKey: key,
+        },
+      };
+    case "google_vertex_anthropic":
+      return {
+        npm: "@ai-sdk/google-vertex/anthropic",
+        options: {
+          baseURL: `${baseUrl}/v1/projects/_aperture_auto_vertex_project_id_/locations/_aperture_auto_vertex_region_/publishers/anthropic/models`,
+          apiKey: key,
+          generateAuthToken: async () => key,
         },
       };
     case "bedrock":
@@ -750,13 +781,48 @@ async function fetchApertureModels(
   }
 }
 
+function parseModelsDevCatalog(
+  value: unknown,
+  logger: Logger,
+): ModelsDevCatalog | undefined {
+  const root = catalogRecord.safeParse(value);
+  if (!root.success) {
+    logger.warn(
+      "[TailscaleAperture] Invalid Models.dev catalog; using model defaults",
+    );
+    return undefined;
+  }
+
+  const catalog: ModelsDevCatalog = Object.create(null);
+  let skipped = 0;
+  for (const [providerID, value] of Object.entries(root.data)) {
+    const provider = catalogProvider.safeParse(value);
+    if (!provider.success) {
+      skipped++;
+      continue;
+    }
+    const models: Record<string, ModelsDevModel> = Object.create(null);
+    for (const [modelID, value] of Object.entries(provider.data.models)) {
+      const model = catalogModel.safeParse(value);
+      if (model.success) models[modelID] = model.data;
+      else skipped++;
+    }
+    catalog[providerID] = { ...provider.data, models };
+  }
+  if (skipped)
+    logger.warn(
+      `[TailscaleAperture] Skipped ${skipped} invalid Models.dev entries; using model defaults where needed`,
+    );
+  return catalog;
+}
+
 async function readModelsDevCatalog(
   path: string,
   logger: Logger,
 ): Promise<ModelsDevCatalog | undefined> {
   try {
     const content = await readFile(path, "utf-8");
-    return JSON.parse(content) as ModelsDevCatalog;
+    return parseModelsDevCatalog(JSON.parse(content), logger);
   } catch (error) {
     logger.warn(
       `[TailscaleAperture] Failed to read Models.dev catalog from ${path}:`,
@@ -789,7 +855,7 @@ async function fetchModelsDevCatalog(
       return undefined;
     }
 
-    return (await response.json()) as ModelsDevCatalog;
+    return parseModelsDevCatalog(await response.json(), logger);
   } catch (error) {
     logger.warn(
       "[TailscaleAperture] Models.dev request failed: GET /api.json",
@@ -974,9 +1040,9 @@ async function createApertureHooks(
     process.env.APERTURE_BASE_URL ||
     fileConfig.baseUrl;
   const apiKey =
-    (options?.apiKey as string) ||
-    process.env.APERTURE_API_KEY ||
-    fileConfig.apiKey ||
+    (options?.apiKey as string | undefined) ??
+    process.env.APERTURE_API_KEY ??
+    fileConfig.apiKey ??
     "";
   const openCodeClient = process.env.OPENCODE_CLIENT || "cli";
   const modelsDevConfig: ApertureConfig = {
@@ -1130,10 +1196,10 @@ async function createApertureHooks(
       }
 
       const existingProvider = config.provider[group.id] ?? {};
-      const modelsObj: Record<string, ApertureModelConfig> = {
-        ...((existingProvider.models as Record<string, ApertureModelConfig>) ??
-          {}),
-      };
+      const modelsObj: Record<string, ApertureModelConfig> = Object.assign(
+        Object.create(null),
+        existingProvider.models,
+      );
       const configuredApiKey =
         existingProvider.options?.apiKey ??
         baseProvider.options?.apiKey ??
@@ -1394,13 +1460,32 @@ export default {
       )) {
         const existingProvider = providers.get(providerID);
         const npm = provider.npm ?? "@ai-sdk/openai-compatible";
+        const vertexMessages = npm === "@ai-sdk/google-vertex/anthropic";
         providers.update(providerID, (draft) => {
           if (draft.name === providerID)
             draft.name = provider.name ?? draft.name;
           if (!existingProvider) draft.activation = "enabled";
-          draft.package ||= npm.startsWith("aisdk:") ? npm : `aisdk:${npm}`;
-          draft.settings = { ...provider.options, ...draft.settings };
+          draft.package ||= vertexMessages
+            ? "@opencode/ai/providers/google-vertex-messages"
+            : npm.startsWith("aisdk:")
+              ? npm
+              : `aisdk:${npm}`;
+          const { generateAuthToken: _, ...settings } = {
+            ...provider.options,
+            ...draft.settings,
+          };
+          if (
+            draft.package === "@opencode/ai/providers/google-vertex-messages"
+          ) {
+            const { apiKey, ...rest } = settings;
+            draft.settings = {
+              ...rest,
+              accessToken: rest.accessToken ?? apiKey,
+            };
+          } else draft.settings = settings;
         });
+        const effectivePackage =
+          providers.get(providerID)?.provider.package ?? npm;
         for (const [modelID, model] of Object.entries(provider.models ?? {})) {
           const isNew = !providers.get(providerID)?.models.has(modelID);
           providers.models.update(providerID, modelID, (draft) => {
@@ -1408,7 +1493,7 @@ export default {
               draft as unknown as V2ModelDraft,
               modelID,
               model,
-              npm,
+              effectivePackage,
               isNew,
             );
           });
@@ -1515,15 +1600,22 @@ function getV2ReasoningBody(
   effort: string,
 ): Record<string, unknown> | undefined {
   // V2 request bodies use wire fields, unlike v1's AI SDK option names.
-  switch (npm) {
+  switch (npm?.replace(/^aisdk:/, "")) {
     case "@ai-sdk/openai":
+    case "@opencode/ai/providers/openai":
       return { reasoning: { effort } };
     case "@ai-sdk/openai-compatible":
+    case "@opencode/ai/providers/openai-compatible":
       return { reasoning_effort: effort };
     case "@ai-sdk/anthropic":
+    case "@ai-sdk/google-vertex/anthropic":
+    case "@opencode/ai/providers/anthropic":
+    case "@opencode/ai/providers/google-vertex-messages":
       return { output_config: { effort } };
     case "@ai-sdk/google":
     case "@ai-sdk/google-vertex":
+    case "@opencode/ai/providers/google":
+    case "@opencode/ai/providers/google-vertex":
       return {
         generationConfig: { thinkingConfig: { thinkingLevel: effort } },
       };

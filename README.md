@@ -87,11 +87,22 @@ Contents:
 }
 ```
 
-`apiKey` is optional. Set it when your Aperture endpoint requires bearer auth. If omitted, the plugin passes an empty key to the generated providers.
+`apiKey` is optional. Set it when your Aperture endpoint requires bearer auth.
+An explicitly empty plugin option or `APERTURE_API_KEY` clears inherited credentials.
+SDKs that require a key receive a harmless placeholder when authentication is disabled.
 
 ### API compatibility
 
 The plugin reads Aperture provider compatibility metadata and registers each provider with the matching OpenCode provider package and endpoint. It supports OpenAI Responses and Chat Completions, Anthropic Messages, Google Vertex, Amazon Bedrock, and Gemini Generate Content routes.
+
+Vertex generate-content and Anthropic raw-predict routes use separate adapters.
+Raw-predict authentication uses the Aperture key, without loading Google credentials.
+
+Provider keys use `aperture-` followed by the URL-encoded Aperture route ID;
+display names are labels only. This keeps routes distinct when names coincide.
+When upgrading from display-name-based keys, update saved model selections and
+per-provider overrides to the new keys (for example, `aperture-xiaomi-mimo` becomes
+`aperture-xiaomi`).
 
 ### Models.dev enrichment
 

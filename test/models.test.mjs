@@ -6,7 +6,7 @@ import { mockModelsResponse } from "./mock-data.mjs";
 
 test("merges model configurations from models.dev catalog", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input, init) => {
+  globalThis.fetch = async (input) => {
     const url = new URL(String(input));
 
     if (url.hostname === "models.dev" && url.pathname === "/api.json") {
@@ -260,23 +260,21 @@ test("uses the base provider for -x- Aperture variants", async () => {
     await plugin.config(config);
 
     assert.equal(
-      config.provider["aperture-opencode-go-anthropic-api"].npm,
+      config.provider["aperture-opencode-go-x-anthropic"].npm,
       "@ai-sdk/anthropic",
     );
     assert.equal(
-      config.provider["aperture-opencode-go-anthropic-api"].models[
-        "minimax-m2.7"
-      ].limit.context,
+      config.provider["aperture-opencode-go-x-anthropic"].models["minimax-m2.7"]
+        .limit.context,
       128000,
     );
     assert.equal(
-      config.provider["aperture-opencode-go-responses-api"].npm,
+      config.provider["aperture-opencode-go-x-responses"].npm,
       "@ai-sdk/openai",
     );
     assert.equal(
-      config.provider["aperture-opencode-go-responses-api"].models[
-        "minimax-m2.7"
-      ].reasoning,
+      config.provider["aperture-opencode-go-x-responses"].models["minimax-m2.7"]
+        .reasoning,
       true,
     );
   } finally {
@@ -355,7 +353,7 @@ test("ignores routing tags when matching Models.dev providers and models", async
     await plugin.config(config);
 
     const model =
-      config.provider["aperture-openrouter-floor"].models[
+      config.provider["aperture-openrouter%3Afloor"].models[
         "openai/gpt-5.6-luna:floor"
       ];
     assert.equal(model.limit.context, 256000);

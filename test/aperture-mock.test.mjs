@@ -83,48 +83,47 @@ test("processes real mock data from local llm correctly", async () => {
     const config = { provider: {} };
     await plugin.config(config);
 
-    // Provider groups are keyed by slugified provider NAME (not id),
-    // so "Xiaomi MiMo" groups under aperture-xiaomi-mimo, etc.
+    // Provider keys follow route IDs; display names remain labels.
     assert.deepEqual(
       Object.keys(config.provider)
         .filter((k) => k.startsWith("aperture"))
         .sort(),
       [
         "aperture-opencode-go",
-        "aperture-opencode-go-anthropic-api",
-        "aperture-opencode-go-v1-responses",
-        "aperture-openai-subscription",
+        "aperture-opencode-go-x-anthropic",
+        "aperture-opencode-go-x-responses",
+        "aperture-openai-sub",
         "aperture-ollama-cloud",
-        "aperture-xiaomi-mimo",
-        "aperture-z-ai-coding-plan",
+        "aperture-xiaomi",
+        "aperture-zai-coding-plan",
       ].sort(),
       "Should populate all 7 provider groups",
     );
 
     assert.ok(
-      config.provider["aperture-z-ai-coding-plan"],
+      config.provider["aperture-zai-coding-plan"],
       "ZAI coding plan provider should exist",
     );
-    const zaiModels = config.provider["aperture-z-ai-coding-plan"].models;
+    const zaiModels = config.provider["aperture-zai-coding-plan"].models;
     assert.ok(zaiModels["GLM-4.5-Air"], "GLM-4.5-Air should exist");
     assert.equal(zaiModels["GLM-4.5-Air"].name, "GLM-4.5-Air");
 
     assert.ok(
-      config.provider["aperture-opencode-go-anthropic-api"],
+      config.provider["aperture-opencode-go-x-anthropic"],
       "OpenCode Go Anthropic provider should exist",
     );
     assert.equal(
-      config.provider["aperture-opencode-go-anthropic-api"].npm,
+      config.provider["aperture-opencode-go-x-anthropic"].npm,
       "@ai-sdk/anthropic",
       "Anthropic messages compatibility mapped correctly",
     );
 
     assert.ok(
-      config.provider["aperture-opencode-go-v1-responses"],
+      config.provider["aperture-opencode-go-x-responses"],
       "OpenCode Go Responses provider should exist",
     );
     assert.equal(
-      config.provider["aperture-opencode-go-v1-responses"].npm,
+      config.provider["aperture-opencode-go-x-responses"].npm,
       "@ai-sdk/openai",
       "OpenAI responses compatibility mapped correctly",
     );

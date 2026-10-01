@@ -20,8 +20,8 @@ const cases = [
   [
     "vertex-predict",
     { google_raw_predict: true },
-    "@ai-sdk/google-vertex",
-    "/v1/projects/_aperture_auto_vertex_project_id_/locations/_aperture_auto_vertex_region_/publishers/google",
+    "@ai-sdk/google-vertex/anthropic",
+    "/v1/projects/_aperture_auto_vertex_project_id_/locations/_aperture_auto_vertex_region_/publishers/anthropic/models",
   ],
   [
     "bedrock-invoke",
@@ -99,6 +99,12 @@ test("maps every Aperture protocol to its AI SDK configuration", async () => {
           assert.equal(provider.options.secretAccessKey, "not-needed", name);
         } else {
           assert.equal(provider.options.apiKey, "not-required", name);
+        }
+        if (name === "vertex-predict") {
+          assert.equal(
+            await provider.options.generateAuthToken(),
+            "not-required",
+          );
         }
       }),
     );
@@ -245,7 +251,7 @@ test("adds the OpenCode request headers to OpenCode Aperture provider groups", a
 
     for (const providerID of [
       "aperture-opencode",
-      "aperture-opencode-go-anthropic-api",
+      "aperture-opencode-go-x-anthropic",
     ]) {
       const output = { headers: { existing: "value" } };
       await plugin["chat.headers"](

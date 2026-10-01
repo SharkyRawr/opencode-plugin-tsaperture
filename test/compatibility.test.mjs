@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { createRequire, findPackageJSON } from "node:module";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import plugin, { TailscaleAperturePlugin } from "../dist/index.js";
 
 // Same empty records and upsert semantics as OpenCode v2's ProviderEditor.
@@ -61,6 +63,7 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
     ["responses", { openai_responses: true }],
     ["anthropic", { anthropic_messages: true }],
     ["vertex", { google_generate_content: true }],
+    ["vertex-raw", { google_raw_predict: true }],
     ["bedrock", { bedrock_converse: true }],
     ["gemini", { gemini_generate_content: true }],
     ["opencode-go-x-responses", { openai_responses: true }],
@@ -170,9 +173,62 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
     const providerID = `aperture-${id}`;
     const expected = config.provider[providerID];
     const { provider, models } = records.get(providerID);
-    assert.equal(provider.package, `aisdk:${expected.npm}`, id);
+    assert.equal(
+      provider.package,
+      id === "vertex-raw"
+        ? "@opencode/ai/providers/google-vertex-messages"
+        : `aisdk:${expected.npm}`,
+      id,
+    );
     assert.equal(provider.settings.baseURL, expected.options.baseURL, id);
-    assert.equal(provider.settings.apiKey, "test-key", id);
+    if (id === "vertex-raw") {
+      assert.equal(provider.settings.accessToken, "test-key");
+      assert.equal(provider.settings.apiKey, undefined);
+      assert.equal(provider.settings.generateAuthToken, undefined);
+      assert.equal(await expected.options.generateAuthToken(), "test-key");
+      const pluginURL = import.meta.resolve("@opencode/plugin");
+      const aiPackage = pathToFileURL(
+        findPackageJSON("@opencode/ai", pluginURL),
+      );
+      const sdk = await import(
+        new URL("./dist/providers/google-vertex-messages.js", aiPackage)
+      );
+      const { Effect } = await import(
+        createRequire(pluginURL).resolve("effect")
+      );
+      const nativeModel = sdk.model(
+        expected.models.model.id,
+        provider.settings,
+      );
+      const request = {
+        model: nativeModel,
+        system: [],
+        tools: [],
+        messages: [
+          { role: "user", content: [{ type: "text", text: "Hello" }] },
+        ],
+        generation: { maxTokens: 16 },
+      };
+      const body = await Effect.runPromise(
+        nativeModel.route.body.from(request),
+      );
+      assert.equal(body.anthropic_version, "vertex-2023-10-16");
+      assert.equal(body.model, undefined);
+      assert.equal(
+        nativeModel.route.endpoint.path({ request, body }),
+        "/vertex-raw/model:streamRawPredict",
+      );
+      const headers = await Effect.runPromise(
+        nativeModel.route.auth.apply({
+          request,
+          method: "POST",
+          url: provider.settings.baseURL,
+          body: JSON.stringify(body),
+          headers: {},
+        }),
+      );
+      assert.equal(headers.authorization, "Bearer test-key");
+    } else assert.equal(provider.settings.apiKey, "test-key", id);
     assert.equal(provider.activation, "enabled", id);
     if (id === "bedrock") assert.equal(provider.settings.region, "us-east-1");
     const model = models.get("model");
@@ -198,6 +254,7 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
       chat: { reasoning_effort: "low" },
       responses: { reasoning: { effort: "low" } },
       anthropic: { output_config: { effort: "low" } },
+      "vertex-raw": { output_config: { effort: "low" } },
       vertex: {
         generationConfig: { thinkingConfig: { thinkingLevel: "low" } },
       },
@@ -263,4 +320,45 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
   });
   assert.deepEqual(custom.body, { temperature: 0.2 });
   assert.deepEqual(custom.variants[0].body, { custom: true });
+  assert.equal(
+    custom.variants.length,
+    1,
+    "custom SDKs receive no generated variants",
+  );
+
+  const { editor: rawOverrides, records: rawRecords } = createProviders();
+  rawOverrides.update("aperture-vertex-raw", (provider) => {
+    provider.settings = { apiKey: "override-key" };
+  });
+  await transform(rawOverrides);
+  assert.equal(
+    rawRecords.get("aperture-vertex-raw").provider.settings.accessToken,
+    "override-key",
+  );
+  assert.equal(
+    rawRecords.get("aperture-vertex-raw").provider.settings.apiKey,
+    undefined,
+  );
+
+  for (const packageName of [
+    "aisdk:@ai-sdk/anthropic",
+    "@opencode/ai/providers/anthropic",
+  ]) {
+    const { editor, records: overridden } = createProviders();
+    editor.update("aperture-chat", (provider) => {
+      provider.package = packageName;
+    });
+    await transform(editor);
+    assert.deepEqual(
+      overridden.get("aperture-chat").models.get("model").variants,
+      [
+        { id: "low", headers: {}, body: { output_config: { effort: "low" } } },
+        {
+          id: "high",
+          headers: {},
+          body: { output_config: { effort: "high" } },
+        },
+      ],
+    );
+  }
 });

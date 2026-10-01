@@ -111,11 +111,9 @@ test("registers models in degraded mode when /api/providers fails", async () => 
     ]),
   });
 
-  assert.deepEqual(Object.keys(config.provider), [
-    "aperture-openai-subscription",
-  ]);
+  assert.deepEqual(Object.keys(config.provider), ["aperture-openai-sub"]);
   assert.equal(
-    config.provider["aperture-openai-subscription"].models["gpt-5.5"].name,
+    config.provider["aperture-openai-sub"].models["gpt-5.5"].name,
     "gpt-5.5",
   );
 });

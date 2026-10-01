@@ -4,6 +4,65 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { platform } from "node:process";
 import { tool } from "@opencode-ai/plugin";
+const catalogNumber = tool.schema.number().finite().nonnegative();
+const catalogCost = tool.schema.object({
+    input: catalogNumber,
+    output: catalogNumber,
+    cache_read: catalogNumber.optional(),
+    cache_write: catalogNumber.optional(),
+});
+const catalogModalities = tool.schema.array(tool.schema.enum(["text", "audio", "image", "video", "pdf"]));
+const catalogModel = tool.schema.object({
+    id: tool.schema.string(),
+    name: tool.schema.string(),
+    family: tool.schema.string().optional(),
+    release_date: tool.schema.string().optional(),
+    attachment: tool.schema.boolean().optional(),
+    status: tool.schema.enum(["alpha", "beta", "deprecated"]).optional(),
+    cost: catalogCost
+        .extend({ context_over_200k: catalogCost.optional() })
+        .optional(),
+    limit: tool.schema
+        .object({
+        context: catalogNumber,
+        input: catalogNumber.optional(),
+        output: catalogNumber,
+    })
+        .optional(),
+    reasoning: tool.schema.boolean().optional(),
+    temperature: tool.schema.boolean().optional(),
+    tool_call: tool.schema.boolean().optional(),
+    modalities: tool.schema
+        .object({
+        input: catalogModalities,
+        output: catalogModalities,
+    })
+        .optional(),
+    interleaved: tool.schema
+        .union([
+        tool.schema.literal(true),
+        tool.schema.object({
+            field: tool.schema.enum(["reasoning_content", "reasoning_details"]),
+        }),
+    ])
+        .optional(),
+    reasoning_options: tool.schema
+        .array(tool.schema.object({
+        type: tool.schema.string(),
+        values: tool.schema.array(tool.schema.string()).optional(),
+        min: catalogNumber.optional(),
+        max: catalogNumber.optional(),
+    }))
+        .optional(),
+});
+const catalogRecord = tool.schema.record(tool.schema.string(), tool.schema.unknown());
+const catalogProvider = tool.schema.object({
+    id: tool.schema.string(),
+    name: tool.schema.string(),
+    npm: tool.schema.string().optional(),
+    api: tool.schema.string().optional(),
+    models: catalogRecord,
+});
 const STARTUP_MODEL_STABILIZATION_DEADLINE_MS = 4_000;
 const STARTUP_FETCH_TIMEOUT_MS = 2_000;
 const STARTUP_POLL_INTERVAL_MS = 250;
@@ -12,18 +71,6 @@ const INTERACTIVE_FETCH_TIMEOUT_MS = 5_000;
 const MODELS_DEV_FETCH_TIMEOUT_MS = 3_000;
 function normalizeBaseUrl(baseUrl) {
     return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
-}
-function slugifyProviderSegment(value) {
-    const normalized = value
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "");
-    return normalized || "default";
-}
-function getProviderDisplayName(providerID) {
-    const slug = slugifyProviderSegment(providerID);
-    return providerID.trim() || slug;
 }
 function normalizeModelLookup(value) {
     return value
@@ -97,9 +144,10 @@ function getApertureProtocol(compatibility) {
         return "anthropic_messages";
     if (compatibility?.openai_chat)
         return "openai_chat";
-    if (compatibility?.google_generate_content ||
-        compatibility?.google_raw_predict)
+    if (compatibility?.google_generate_content)
         return "google_vertex";
+    if (compatibility?.google_raw_predict)
+        return "google_vertex_anthropic";
     if (compatibility?.bedrock_model_invoke || compatibility?.bedrock_converse)
         return "bedrock";
     if (compatibility?.gemini_generate_content)
@@ -109,9 +157,8 @@ function getApertureProtocol(compatibility) {
 function getProviderGroup(model, providers) {
     const providerID = model.metadata?.provider?.id?.trim();
     const providerName = model.metadata?.provider?.name?.trim();
-    const providerSegment = providerName || providerID;
     const routeProviderID = providerID || providerName;
-    if (!providerSegment || !routeProviderID) {
+    if (!routeProviderID) {
         return {
             id: "aperture",
             name: "Aperture",
@@ -120,8 +167,8 @@ function getProviderGroup(model, providers) {
     }
     const protocol = getApertureProtocol(providers?.get(routeProviderID)?.compatibility);
     return {
-        id: `aperture-${slugifyProviderSegment(providerSegment)}`,
-        name: `Aperture/${providerName || getProviderDisplayName(providerSegment)}`,
+        id: `aperture-${encodeURIComponent(routeProviderID)}`,
+        name: `Aperture/${providerName || routeProviderID}`,
         routeProviderID,
         protocol,
     };
@@ -163,6 +210,15 @@ function getProviderSDKConfig(protocol, baseUrl, apiKey) {
                 options: {
                     baseURL: `${baseUrl}/v1/projects/_aperture_auto_vertex_project_id_/locations/_aperture_auto_vertex_region_/publishers/google`,
                     apiKey: key,
+                },
+            };
+        case "google_vertex_anthropic":
+            return {
+                npm: "@ai-sdk/google-vertex/anthropic",
+                options: {
+                    baseURL: `${baseUrl}/v1/projects/_aperture_auto_vertex_project_id_/locations/_aperture_auto_vertex_region_/publishers/anthropic/models`,
+                    apiKey: key,
+                    generateAuthToken: async () => key,
                 },
             };
         case "bedrock":
@@ -434,10 +490,38 @@ async function fetchApertureModels(baseUrl, apiKey, logger, timeoutMs = INTERACT
         clearTimeout(timer);
     }
 }
+function parseModelsDevCatalog(value, logger) {
+    const root = catalogRecord.safeParse(value);
+    if (!root.success) {
+        logger.warn("[TailscaleAperture] Invalid Models.dev catalog; using model defaults");
+        return undefined;
+    }
+    const catalog = Object.create(null);
+    let skipped = 0;
+    for (const [providerID, value] of Object.entries(root.data)) {
+        const provider = catalogProvider.safeParse(value);
+        if (!provider.success) {
+            skipped++;
+            continue;
+        }
+        const models = Object.create(null);
+        for (const [modelID, value] of Object.entries(provider.data.models)) {
+            const model = catalogModel.safeParse(value);
+            if (model.success)
+                models[modelID] = model.data;
+            else
+                skipped++;
+        }
+        catalog[providerID] = { ...provider.data, models };
+    }
+    if (skipped)
+        logger.warn(`[TailscaleAperture] Skipped ${skipped} invalid Models.dev entries; using model defaults where needed`);
+    return catalog;
+}
 async function readModelsDevCatalog(path, logger) {
     try {
         const content = await readFile(path, "utf-8");
-        return JSON.parse(content);
+        return parseModelsDevCatalog(JSON.parse(content), logger);
     }
     catch (error) {
         logger.warn(`[TailscaleAperture] Failed to read Models.dev catalog from ${path}:`, error);
@@ -459,7 +543,7 @@ async function fetchModelsDevCatalog(url, logger, timeoutMs = MODELS_DEV_FETCH_T
             logger.warn(`[TailscaleAperture] Models.dev request failed: GET /api.json ${response.status} ${response.statusText}`);
             return undefined;
         }
-        return (await response.json());
+        return parseModelsDevCatalog(await response.json(), logger);
     }
     catch (error) {
         logger.warn("[TailscaleAperture] Models.dev request failed: GET /api.json", error);
@@ -596,9 +680,9 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
     const rawBaseUrl = options?.baseUrl ||
         process.env.APERTURE_BASE_URL ||
         fileConfig.baseUrl;
-    const apiKey = options?.apiKey ||
-        process.env.APERTURE_API_KEY ||
-        fileConfig.apiKey ||
+    const apiKey = options?.apiKey ??
+        process.env.APERTURE_API_KEY ??
+        fileConfig.apiKey ??
         "";
     const openCodeClient = process.env.OPENCODE_CLIENT || "cli";
     const modelsDevConfig = {
@@ -712,10 +796,7 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
                 openCodeSessionProviderIDs.add(group.id);
             }
             const existingProvider = config.provider[group.id] ?? {};
-            const modelsObj = {
-                ...(existingProvider.models ??
-                    {}),
-            };
+            const modelsObj = Object.assign(Object.create(null), existingProvider.models);
             const configuredApiKey = existingProvider.options?.apiKey ??
                 baseProvider.options?.apiKey ??
                 apiKey;
@@ -918,18 +999,36 @@ export default {
             for (const [providerID, provider] of Object.entries(config.provider ?? {})) {
                 const existingProvider = providers.get(providerID);
                 const npm = provider.npm ?? "@ai-sdk/openai-compatible";
+                const vertexMessages = npm === "@ai-sdk/google-vertex/anthropic";
                 providers.update(providerID, (draft) => {
                     if (draft.name === providerID)
                         draft.name = provider.name ?? draft.name;
                     if (!existingProvider)
                         draft.activation = "enabled";
-                    draft.package ||= npm.startsWith("aisdk:") ? npm : `aisdk:${npm}`;
-                    draft.settings = { ...provider.options, ...draft.settings };
+                    draft.package ||= vertexMessages
+                        ? "@opencode/ai/providers/google-vertex-messages"
+                        : npm.startsWith("aisdk:")
+                            ? npm
+                            : `aisdk:${npm}`;
+                    const { generateAuthToken: _, ...settings } = {
+                        ...provider.options,
+                        ...draft.settings,
+                    };
+                    if (draft.package === "@opencode/ai/providers/google-vertex-messages") {
+                        const { apiKey, ...rest } = settings;
+                        draft.settings = {
+                            ...rest,
+                            accessToken: rest.accessToken ?? apiKey,
+                        };
+                    }
+                    else
+                        draft.settings = settings;
                 });
+                const effectivePackage = providers.get(providerID)?.provider.package ?? npm;
                 for (const [modelID, model] of Object.entries(provider.models ?? {})) {
                     const isNew = !providers.get(providerID)?.models.has(modelID);
                     providers.models.update(providerID, modelID, (draft) => {
-                        applyV2Model(draft, modelID, model, npm, isNew);
+                        applyV2Model(draft, modelID, model, effectivePackage, isNew);
                     });
                 }
             }
@@ -998,15 +1097,22 @@ function applyV2Model(model, modelID, config, npm, isNew) {
 }
 function getV2ReasoningBody(npm, effort) {
     // V2 request bodies use wire fields, unlike v1's AI SDK option names.
-    switch (npm) {
+    switch (npm?.replace(/^aisdk:/, "")) {
         case "@ai-sdk/openai":
+        case "@opencode/ai/providers/openai":
             return { reasoning: { effort } };
         case "@ai-sdk/openai-compatible":
+        case "@opencode/ai/providers/openai-compatible":
             return { reasoning_effort: effort };
         case "@ai-sdk/anthropic":
+        case "@ai-sdk/google-vertex/anthropic":
+        case "@opencode/ai/providers/anthropic":
+        case "@opencode/ai/providers/google-vertex-messages":
             return { output_config: { effort } };
         case "@ai-sdk/google":
         case "@ai-sdk/google-vertex":
+        case "@opencode/ai/providers/google":
+        case "@opencode/ai/providers/google-vertex":
             return {
                 generationConfig: { thinkingConfig: { thinkingLevel: effort } },
             };
