@@ -11,6 +11,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      OPENCODE_V2_VERSION: 2.0.29
 
     steps:
       - name: Checkout repository
@@ -30,12 +32,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Cache OpenCode v2 binary
+        id: opencode-v2-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/opencode-v2/opencode
+          key: opencode-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.OPENCODE_V2_VERSION }}
+
       - name: Install OpenCode v2
+        if: steps.opencode-v2-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/opencode-v2"
-          pnpm --dir "$RUNNER_TEMP/opencode-v2" add --allow-build=@opencode/cli @opencode/cli@2.0.29
+          pnpm --dir "$RUNNER_TEMP/opencode-v2" add --allow-build=@opencode/cli "@opencode/cli@$OPENCODE_V2_VERSION"
+          cp "$RUNNER_TEMP/opencode-v2/node_modules/@opencode/cli/bin/opencode.exe" "$RUNNER_TEMP/opencode-v2/opencode"
 
       - name: Run tests
         env:
-          OPENCODE_V2_BIN: ${{ runner.temp }}/opencode-v2/node_modules/.bin/opencode2
+          OPENCODE_V2_BIN: ${{ runner.temp }}/opencode-v2/opencode
         run: pnpm test
