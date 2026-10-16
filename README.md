@@ -4,6 +4,15 @@
 
 Automatically populate models from Tailscale Aperture.
 
+## v0.5.0 release notes
+
+- Providers are now registered in OpenCode by ID rather than display name. You may need to favorite some models again after upgrading.
+- Explicitly empty API keys now clear inherited credentials.
+- Vertex generate-content and Anthropic raw-predict routes use separate adapters; raw-predict authentication uses the Aperture key without loading Google credentials.
+- V2 reasoning variants follow the effective SDK, including configured overrides.
+- Invalid Models.dev catalog entries are skipped with warnings while valid entries remain available.
+- Updated dependencies, including `@opencode-ai/plugin` 1.19.0 and `@opencode/plugin` 2.0.29.
+
 ## OpenCode compatibility
 
 The same package supports OpenCode v1 (1.4.0 or newer) and the new v2
@@ -100,9 +109,7 @@ Raw-predict authentication uses the Aperture key, without loading Google credent
 
 Provider keys use `aperture-` followed by the URL-encoded Aperture route ID;
 display names are labels only. This keeps routes distinct when names coincide.
-When upgrading from display-name-based keys, update saved model selections and
-per-provider overrides to the new keys (for example, `aperture-xiaomi-mimo` becomes
-`aperture-xiaomi`).
+You may need to favorite some models again after upgrading.
 
 ### Models.dev enrichment
 
