@@ -18,8 +18,12 @@ Automatically populate models from Tailscale Aperture.
 The same package supports OpenCode v1 (1.4.0 or newer) and the new v2
 plugin API. The default export provides v1 `server` and v2 `setup` entry
 points; direct callers can still import the named `TailscaleAperturePlugin`
-function for v1. The v2 adapter targets the API shipped in
-`@opencode/plugin` 2.0.5.
+function for v1. The v2 adapter targets `@opencode/plugin` 2.0.29.
+CI runs the runtime smoke test against the lockfile's OpenCode v1 binary
+(currently 1.19.0) and OpenCode CLI v2.0.29. These checks verify plugin loading
+and provider/model publication against a local mock Aperture endpoint; they
+do not exercise upstream inference. The declared supported range is
+OpenCode `^1.4.0 || ^2.0.0`; CI does not test every version in that range.
 
 Both entry points share model discovery, provider grouping, protocol selection,
 and Models.dev enrichment. V2 registers replayable provider transforms and maps

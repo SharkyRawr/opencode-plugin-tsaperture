@@ -30,5 +30,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install OpenCode v2
+        run: |
+          mkdir -p "$RUNNER_TEMP/opencode-v2"
+          pnpm --dir "$RUNNER_TEMP/opencode-v2" add --allow-build=@opencode/cli @opencode/cli@2.0.29
+
       - name: Run tests
+        env:
+          OPENCODE_V2_BIN: ${{ runner.temp }}/opencode-v2/node_modules/.bin/opencode2
         run: pnpm test
