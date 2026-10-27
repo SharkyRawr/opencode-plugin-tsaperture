@@ -1046,11 +1046,13 @@ function applyV2Model(model, modelID, config, npm, isNew) {
     if (isNew ||
         (!model.capabilities.input.length && !model.capabilities.output.length)) {
         model.capabilities = {
+            ...model.capabilities,
             tools: config.tool_call ?? true,
             input: config.modalities?.input ?? ["text"],
             output: config.modalities?.output ?? ["text"],
         };
     }
+    model.capabilities.temperature ??= config.temperature;
     model.limit = {
         context: (isNew ? config.limit?.context : model.limit.context) ||
             config.limit?.context ||

@@ -92,7 +92,7 @@ test("installed OpenCode loads v1 and publishes v2 providers when a v2 binary is
 
     const v2Binary = process.env.OPENCODE_V2_BIN;
     if (!v2Binary) return;
-    const v2Entry = fileURLToPath(new URL("../dist", import.meta.url));
+    const v2Entry = fileURLToPath(new URL("..", import.meta.url));
 
     // Reserve an available port rather than using OpenCode's default port.
     const portServer = createServer();
@@ -142,6 +142,7 @@ test("installed OpenCode loads v1 and publishes v2 providers when a v2 binary is
     }
     assert.ok(model, output);
     assert.equal(model.modelID, "smoke/test-model");
+    assert.equal(model.capabilities.temperature, true);
     assert.equal(model.package, "@opencode/ai/providers/openai-compatible");
     assert.equal(model.settings.baseURL, `${options.baseUrl}/v1`);
     assert.equal(model.settings.apiKey, "smoke-test");

@@ -1509,7 +1509,12 @@ type V2ModelDraft = {
   modelID: string;
   name: string;
   family?: string;
-  capabilities: { tools: boolean; input: string[]; output: string[] };
+  capabilities: {
+    tools: boolean;
+    input: string[];
+    output: string[];
+    temperature?: boolean;
+  };
   limit: { context: number; input?: number; output: number };
   status: "active" | "alpha" | "beta" | "deprecated";
   enabled: boolean;
@@ -1542,11 +1547,13 @@ function applyV2Model(
     (!model.capabilities.input.length && !model.capabilities.output.length)
   ) {
     model.capabilities = {
+      ...model.capabilities,
       tools: config.tool_call ?? true,
       input: config.modalities?.input ?? ["text"],
       output: config.modalities?.output ?? ["text"],
     };
   }
+  model.capabilities.temperature ??= config.temperature;
   model.limit = {
     context:
       (isNew ? config.limit?.context : model.limit.context) ||

@@ -4,6 +4,12 @@
 
 Automatically populate models from Tailscale Aperture.
 
+## v0.5.1 release notes
+
+- Updated dependencies, including `@opencode-ai/plugin` 1.19.4 and `@opencode/plugin` 2.2.0.
+- V2 now preserves the catalog's temperature-support capability and explicit overrides.
+- Runtime checks load the package root through its exports, and CI now tests OpenCode CLI 2.2.0.
+
 ## v0.5.0 release notes
 
 - Providers are now registered in OpenCode by ID rather than display name. You may need to favorite some models again after upgrading.
@@ -18,24 +24,30 @@ Automatically populate models from Tailscale Aperture.
 The same package supports OpenCode v1 (1.4.0 or newer) and the new v2
 plugin API. The default export provides v1 `server` and v2 `setup` entry
 points; direct callers can still import the named `TailscaleAperturePlugin`
-function for v1. The v2 adapter targets `@opencode/plugin` 2.0.29.
+function for v1. The v2 adapter targets `@opencode/plugin` 2.2.0.
 CI runs the runtime smoke test against the lockfile's OpenCode v1 binary
-(currently 1.19.0) and OpenCode CLI v2.0.29. These checks verify plugin loading
+(currently 1.19.4) and OpenCode CLI v2.2.0. These checks verify plugin loading
 and provider/model publication against a local mock Aperture endpoint; they
 do not exercise upstream inference. The declared supported range is
 OpenCode `^1.4.0 || ^2.0.0`; CI does not test every version in that range.
 
+OpenCode 2.2 resolves local plugin directories through their `package.json`
+exports. This package's root export supplies the server plugin; no separate
+`server` export is required. The v2 runtime smoke test loads the package root
+to exercise this resolution path.
+
 Both entry points share model discovery, provider grouping, protocol selection,
 and Models.dev enrichment. V2 registers replayable provider transforms and maps
 limits, modalities, costs, release dates, and reasoning variants to its model
-schema. Existing catalog settings take precedence over discovery defaults.
+schema, including the temperature-support capability. Existing catalog settings
+take precedence over discovery defaults.
 Effort variants use each protocol's wire format; they are not generated for
 Bedrock or custom SDKs, which have no common effort parameter.
 
 The two model lookup tools remain v1-only and v2 diagnostics go to stderr.
 OpenCode v2 supplies project, session, and client headers to model requests.
 V2's model schema also has no
-equivalent for v1's reasoning, temperature, attachment, or interleaved flags;
+equivalent for v1's reasoning, attachment, or interleaved flags;
 input modalities still describe supported attachments.
 
 ## Configuration

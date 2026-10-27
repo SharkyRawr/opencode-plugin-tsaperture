@@ -12,7 +12,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     env:
-      OPENCODE_V2_VERSION: 2.0.29
+      OPENCODE_V2_VERSION: 2.2.0
 
     steps:
       - name: Checkout repository
@@ -21,7 +21,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 11
+          version: 12
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -43,6 +43,7 @@ jobs:
         if: steps.opencode-v2-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/opencode-v2"
+          printf 'minimumReleaseAge: 1440\nminimumReleaseAgeExclude:\n  - "@opencode/cli"\n  - "@opencode/cli-*"\n' > "$RUNNER_TEMP/opencode-v2/pnpm-workspace.yaml"
           pnpm --dir "$RUNNER_TEMP/opencode-v2" add --allow-build=@opencode/cli "@opencode/cli@$OPENCODE_V2_VERSION"
           cp "$RUNNER_TEMP/opencode-v2/node_modules/@opencode/cli/bin/opencode.exe" "$RUNNER_TEMP/opencode-v2/opencode"
 

@@ -74,6 +74,7 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
     family: "example",
     release_date: "2026-09-01",
     tool_call: true,
+    temperature: false,
     modalities: { input: ["text", "image"], output: ["text"] },
     limit: { context: 200_000, input: 180_000, output: 20_000 },
     cost: {
@@ -236,6 +237,7 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
     assert.deepEqual(model.limit, expected.models.model.limit, id);
     assert.deepEqual(model.capabilities, {
       tools: true,
+      temperature: false,
       input: ["text", "image"],
       output: ["text"],
     });
@@ -294,6 +296,7 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
     model.modelID = "custom/model";
     model.enabled = false;
     model.limit.output = 100;
+    model.capabilities.temperature = true;
     model.body = { temperature: 0.2 };
     model.variants = [
       { id: "low", headers: { custom: "value" }, body: { custom: true } },
@@ -313,6 +316,7 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
   assert.equal(custom.name, "My Model");
   assert.equal(custom.modelID, "custom/model");
   assert.equal(custom.enabled, false);
+  assert.equal(custom.capabilities.temperature, true);
   assert.deepEqual(custom.limit, {
     context: 200_000,
     input: 180_000,

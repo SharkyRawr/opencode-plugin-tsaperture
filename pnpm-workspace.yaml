@@ -2,11 +2,13 @@ allowBuilds:
   msgpackr-extract: true
   opencode-ai: true
   protobufjs: false
+minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
-  - '@opencode/ai@2.0.5 || 2.0.21'
-  - '@opencode/client@2.0.5 || 2.0.21'
-  - '@opencode/plugin@2.0.5 || 2.0.21'
-  - '@opencode/protocol@2.0.5 || 2.0.21'
-  - '@opencode/schema@2.0.5 || 2.0.21'
-  - '@opencode/util@2.0.5 || 2.0.21'
+  - '@opencode/ai@2.0.5 || 2.0.21 || 2.2.0'
+  - '@opencode/client@2.0.5 || 2.0.21 || 2.2.0'
+  - '@opencode/plugin@2.0.5 || 2.0.21 || 2.2.0'
+  - '@opencode/protocol@2.0.5 || 2.0.21 || 2.2.0'
+  - '@opencode/schema@2.0.5 || 2.0.21 || 2.2.0'
+  - '@opencode/util@2.0.5 || 2.0.21 || 2.2.0'
   - '@types/node@24.13.6'
+  - 'bowser@2.15.0'
