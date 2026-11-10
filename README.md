@@ -4,6 +4,11 @@
 
 Automatically populate models from Tailscale Aperture.
 
+## v0.5.4 release notes
+
+- Updated dependencies, including `@opencode-ai/plugin` 1.19.5 and `@opencode/plugin` 2.2.6, and refreshed the Biome schema.
+- Applied `pnpm audit --fix` overrides for `glob`, `minimatch`, `toml`, and `zod` to resolve dependency security advisories.
+
 ## v0.5.3 release notes
 
 - Conflicting canonical model identities now remain unmatched even when one catalog entry belongs to the publisher, preventing incorrect capability and limit defaults.
@@ -35,9 +40,9 @@ Automatically populate models from Tailscale Aperture.
 The same package supports OpenCode v1 (1.4.0 or newer) and the new v2
 plugin API. The default export provides v1 `server` and v2 `setup` entry
 points; direct callers can still import the named `TailscaleAperturePlugin`
-function for v1. The v2 adapter targets `@opencode/plugin` 2.2.0.
+function for v1. The v2 adapter targets `@opencode/plugin` 2.2.6.
 CI runs the runtime smoke test against the lockfile's OpenCode v1 binary
-(currently 1.19.4) and OpenCode CLI v2.2.0. These checks verify plugin loading
+(currently 1.19.5) and OpenCode CLI v2.2.0. These checks verify plugin loading
 and provider/model publication against a local mock Aperture endpoint; they
 do not exercise upstream inference. The declared supported range is
 OpenCode `^1.4.0 || ^2.0.0`; CI does not test every version in that range.
