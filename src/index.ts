@@ -323,17 +323,18 @@ function findModelsDevEntry(
 
   const uniqueMatch = exactMatches.length === 1 ? exactMatches[0] : undefined;
 
-  const firstParty = exactMatches.filter(({ provider, model }) =>
-    model.canonical_model_id?.startsWith(`${provider.id}/`),
-  );
-  if (firstParty.length === 1) return { ...firstParty[0], inferred: true };
-
   const canonicalIDs = new Set(
     exactMatches.flatMap(({ model }) =>
       model.canonical_model_id ? [model.canonical_model_id] : [],
     ),
   );
   if (canonicalIDs.size !== 1) return uniqueMatch;
+
+  const firstParty = exactMatches.filter(({ provider, model }) =>
+    model.canonical_model_id?.startsWith(`${provider.id}/`),
+  );
+  if (firstParty.length === 1) return { ...firstParty[0], inferred: true };
+
   const [canonicalID] = canonicalIDs;
   const canonicalProvider = catalog[canonicalID.split("/", 1)[0]];
   if (!canonicalProvider) return uniqueMatch;

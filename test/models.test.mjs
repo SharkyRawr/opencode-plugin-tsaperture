@@ -110,6 +110,11 @@ test("custom providers resolve model names and canonical identities without inhe
   const ambiguous = await discover();
   assert.equal(ambiguous[id].reasoning, false);
   assert.equal(ambiguous[id].variants, undefined);
+
+  catalog.publisher.models[id] = { ...catalog.publisher.models.current, id };
+  const ambiguousFirstParty = await discover();
+  assert.equal(ambiguousFirstParty[id].reasoning, false);
+  assert.equal(ambiguousFirstParty[id].variants, undefined);
 });
 
 test("merges model configurations from models.dev catalog", async () => {
