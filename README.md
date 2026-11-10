@@ -4,6 +4,17 @@
 
 Automatically populate models from Tailscale Aperture.
 
+## v0.5.3 release notes
+
+- Conflicting canonical model identities now remain unmatched even when one catalog entry belongs to the publisher, preventing incorrect capability and limit defaults.
+
+## v0.5.2 release notes
+
+- Custom Aperture providers can resolve Models.dev capabilities and reasoning efforts by model name and canonical identity, including case differences and publisher-prefixed model IDs.
+- A discovered model such as `deepseek/deepseek-v4.1-flash-1017` can match the catalog while retaining its Aperture provider route, such as `vllm/deepseek/deepseek-v4.1-flash-1017`.
+- Inferred publisher profiles omit publisher pricing and retirement status. Provider-specific matches and explicit model settings retain precedence.
+- Added custom-provider matching and reasoning-variant coverage for OpenCode v1 and v2.
+
 ## v0.5.1 release notes
 
 - Updated dependencies, including `@opencode-ai/plugin` 1.19.4 and `@opencode/plugin` 2.2.0.
