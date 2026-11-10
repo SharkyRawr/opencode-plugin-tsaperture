@@ -3,6 +3,10 @@ import { createRequire, findPackageJSON } from "node:module";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import plugin, { TailscaleAperturePlugin } from "../dist/index.js";
+import {
+  customModelAliases,
+  customProviderCatalog,
+} from "./model-identity-fixture.mjs";
 
 // Same empty records and upsert semantics as OpenCode v2's ProviderEditor.
 function createProviders() {
@@ -54,6 +58,57 @@ function createProviders() {
   };
   return { editor, records };
 }
+
+test("v2 publishes reasoning effort variants for custom-provider model identities", async (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(String(input));
+    if (url.hostname === "catalog.example")
+      return Response.json(customProviderCatalog);
+    if (url.pathname === "/api/providers")
+      return Response.json([
+        { id: "self-host", compatibility: { openai_chat: true } },
+      ]);
+    assert.equal(url.pathname, "/v1/models");
+    return Response.json({
+      data: customModelAliases.map((id) => ({
+        id,
+        metadata: { provider: { id: "self-host" } },
+      })),
+    });
+  });
+  let transform;
+  await plugin.setup({
+    options: {
+      baseUrl: "https://aperture.example",
+      apiKey: "test-key",
+      modelsDevUrl: "https://catalog.example",
+      disableModelsDev: false,
+    },
+    provider: {
+      transform: async (callback) => {
+        transform = callback;
+      },
+      reload: async () => {},
+    },
+  });
+  const { editor, records } = createProviders();
+  await transform(editor);
+  await transform(editor);
+  for (const id of customModelAliases) {
+    const model = records.get("aperture-self-host").models.get(id);
+    assert.equal(model.modelID, `self-host/${id}`);
+    assert.equal(model.enabled, true);
+    assert.deepEqual(
+      model.variants,
+      ["low", "high", "max"].map((effort) => ({
+        id: effort,
+        headers: {},
+        body: { reasoning_effort: effort },
+      })),
+    );
+  }
+});
 
 test("one package supports v1 server hooks and v2 provider transforms", async (t) => {
   assert.equal(plugin.server, TailscaleAperturePlugin);

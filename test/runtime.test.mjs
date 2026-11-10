@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { customProviderCatalog } from "./model-identity-fixture.mjs";
 
 test("installed OpenCode loads v1 and publishes v2 providers when a v2 binary is supplied", {
   timeout: 30_000,
@@ -16,6 +17,7 @@ test("installed OpenCode loads v1 and publishes v2 providers when a v2 binary is
   const binary = fileURLToPath(
     new URL("../node_modules/opencode-ai/bin/opencode.exe", import.meta.url),
   );
+  let modelID = "test-model";
   const endpoint = createServer((request, response) => {
     response.setHeader("content-type", "application/json");
     response.end(
@@ -31,7 +33,7 @@ test("installed OpenCode loads v1 and publishes v2 providers when a v2 binary is
           : {
               data: [
                 {
-                  id: "test-model",
+                  id: modelID,
                   object: "model",
                   created: 0,
                   owned_by: "smoke",
@@ -93,6 +95,10 @@ test("installed OpenCode loads v1 and publishes v2 providers when a v2 binary is
     const v2Binary = process.env.OPENCODE_V2_BIN;
     if (!v2Binary) return;
     const v2Entry = fileURLToPath(new URL("..", import.meta.url));
+    modelID = "publisher/model-v1";
+    delete env.OPENCODE_DISABLE_MODELS_FETCH;
+    const modelsDevPath = join(directory, "plugin-catalog.json");
+    await writeFile(modelsDevPath, JSON.stringify(customProviderCatalog));
 
     // Reserve an available port rather than using OpenCode's default port.
     const portServer = createServer();
@@ -102,7 +108,14 @@ test("installed OpenCode loads v1 and publishes v2 providers when a v2 binary is
     await new Promise((resolve) => portServer.close(resolve));
     await writeFile(
       join(env.OPENCODE_CONFIG_DIR, "opencode.json"),
-      JSON.stringify({ plugins: [{ package: v2Entry, options }] }),
+      JSON.stringify({
+        plugins: [
+          {
+            package: v2Entry,
+            options: { ...options, disableModelsDev: false, modelsDevPath },
+          },
+        ],
+      }),
     );
     child = spawn(
       v2Binary,
@@ -141,7 +154,15 @@ test("installed OpenCode loads v1 and publishes v2 providers when a v2 binary is
       }
     }
     assert.ok(model, output);
-    assert.equal(model.modelID, "smoke/test-model");
+    assert.equal(model.modelID, "smoke/publisher/model-v1");
+    assert.deepEqual(
+      model.variants,
+      ["low", "high", "max"].map((effort) => ({
+        id: effort,
+        headers: {},
+        body: { reasoning_effort: effort },
+      })),
+    );
     assert.equal(model.capabilities.temperature, true);
     assert.equal(model.package, "@opencode/ai/providers/openai-compatible");
     assert.equal(model.settings.baseURL, `${options.baseUrl}/v1`);

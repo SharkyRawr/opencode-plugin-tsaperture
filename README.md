@@ -131,7 +131,9 @@ You may need to favorite some models again after upgrading.
 
 The plugin enriches Aperture's `/v1/models` response with the same Models.dev catalog OpenCode uses. When a discovered model matches a catalog provider/model ID, the generated OpenCode config includes the catalog's family, release date, cost, modalities, reasoning/tool/temperature support, interleaved reasoning field, variants, and accurate `limit.context`, `limit.input`, and `limit.output` values.
 
-**Important:** For full provider-specific feature support, the Aperture provider `id` and model `id` should match the Models.dev respective IDs. Provider IDs with an `-x-` suffix use the base ID for Models.dev lookup, so `opencode-go-x-anthropic` and `opencode-go-x-responses` both use the `opencode-go` catalog entry while retaining their separate API compatibility and SDK configuration.
+Provider-specific matches take precedence. Provider IDs with an `-x-` suffix use the base ID for Models.dev lookup, so `opencode-go-x-anthropic` and `opencode-go-x-responses` both use the `opencode-go` catalog entry while retaining their separate API compatibility and SDK configuration.
+
+Custom providers can also match by model name, including case differences and publisher-prefixed IDs. For example, `vllm/deepseek/deepseek-v4.1-flash-1017` keeps its vLLM route while resolving `deepseek/deepseek-v4.1-flash-1017` through the catalog. When several hosts list the model, the plugin uses `canonical_model_id` to find the publisher's model profile and reasoning efforts, preferring an active publisher alias. It does not copy that publisher's pricing or retirement status into the inferred model. Conflicting model identities remain unmatched, and explicit model settings still override inferred defaults. These capabilities describe the catalog model; the self-hosted server must support the advertised inputs and effort parameters.
 
 Optional `aperture.json` fields:
 

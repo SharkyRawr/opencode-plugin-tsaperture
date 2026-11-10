@@ -15,6 +15,7 @@ const catalogModalities = tool.schema.array(tool.schema.enum(["text", "audio", "
 const catalogModel = tool.schema.object({
     id: tool.schema.string(),
     name: tool.schema.string(),
+    canonical_model_id: tool.schema.string().optional(),
     family: tool.schema.string().optional(),
     release_date: tool.schema.string().optional(),
     attachment: tool.schema.boolean().optional(),
@@ -92,7 +93,8 @@ function findProviderModel(provider, modelKeys) {
             return candidate;
         }
     }
-    return undefined;
+    const matches = Object.entries(provider.models).filter(([key]) => modelKeys.has(normalizeModelLookup(key)));
+    return matches.length === 1 ? matches[0][1] : undefined;
 }
 function findModelsDevEntry(model, catalog, apertureProvider) {
     if (!catalog) {
@@ -126,16 +128,44 @@ function findModelsDevEntry(model, catalog, apertureProvider) {
             return { provider, model: candidate };
         }
     }
+    // A namespaced ID can identify the publisher even when Aperture's provider is custom.
+    const separator = untaggedModelID.indexOf("/");
+    const publisher = catalog[untaggedModelID.slice(0, separator).toLowerCase()];
+    if (separator > 0 && publisher) {
+        const id = untaggedModelID.slice(separator + 1);
+        const candidate = findProviderModel(publisher, new Set([id, id.toLowerCase(), normalizeModelLookup(id)]));
+        if (candidate)
+            return { provider: publisher, model: candidate, inferred: true };
+    }
     const exactMatches = [];
     for (const provider of Object.values(catalog)) {
-        for (const key of modelKeys) {
-            const candidate = provider.models[key];
-            if (candidate) {
+        for (const [key, candidate] of Object.entries(provider.models)) {
+            if (modelKeys.has(key) || modelKeys.has(normalizeModelLookup(key))) {
                 exactMatches.push({ provider, model: candidate });
             }
         }
     }
-    return exactMatches.length === 1 ? exactMatches[0] : undefined;
+    const uniqueMatch = exactMatches.length === 1 ? exactMatches[0] : undefined;
+    const firstParty = exactMatches.filter(({ provider, model }) => model.canonical_model_id?.startsWith(`${provider.id}/`));
+    if (firstParty.length === 1)
+        return { ...firstParty[0], inferred: true };
+    const canonicalIDs = new Set(exactMatches.flatMap(({ model }) => model.canonical_model_id ? [model.canonical_model_id] : []));
+    if (canonicalIDs.size !== 1)
+        return uniqueMatch;
+    const [canonicalID] = canonicalIDs;
+    const canonicalProvider = catalog[canonicalID.split("/", 1)[0]];
+    if (!canonicalProvider)
+        return uniqueMatch;
+    const publisherModelID = canonicalID.slice(canonicalID.indexOf("/") + 1);
+    const canonicalModel = findProviderModel(canonicalProvider, new Set([canonicalID, publisherModelID, normalizeModelLookup(publisherModelID)]));
+    if (canonicalModel)
+        return { provider: canonicalProvider, model: canonicalModel, inferred: true };
+    const canonicalModels = Object.values(canonicalProvider.models).filter((model) => model.canonical_model_id === canonicalID);
+    const activeModels = canonicalModels.filter((model) => model.status !== "deprecated");
+    const candidates = activeModels.length ? activeModels : canonicalModels;
+    if (candidates.length !== 1)
+        return uniqueMatch;
+    return { provider: canonicalProvider, model: candidates[0], inferred: true };
 }
 function getApertureProtocol(compatibility) {
     if (compatibility?.openai_responses)
@@ -256,8 +286,8 @@ function getModelsDevDefaults(entry) {
         family: entry.model.family,
         release_date: entry.model.release_date,
         attachment: entry.model.attachment,
-        status: entry.model.status,
-        cost: entry.model.cost,
+        status: entry.inferred ? undefined : entry.model.status,
+        cost: entry.inferred ? undefined : entry.model.cost,
         limit: entry.model.limit,
         reasoning: entry.model.reasoning,
         temperature: entry.model.temperature,

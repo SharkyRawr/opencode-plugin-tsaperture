@@ -3,6 +3,114 @@ import test from "node:test";
 import { TailscaleAperturePlugin } from "../dist/index.js";
 
 import { mockModelsResponse } from "./mock-data.mjs";
+import {
+  customModelAliases,
+  customProviderCatalog,
+} from "./model-identity-fixture.mjs";
+
+test("custom providers resolve model names and canonical identities without inheriting host pricing or retirement", async (t) => {
+  let providerID = "self-host";
+  let catalog = customProviderCatalog;
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(String(input));
+    if (url.hostname === "catalog.example") return Response.json(catalog);
+    if (url.pathname === "/api/providers")
+      return Response.json([
+        { id: providerID, compatibility: { openai_chat: true } },
+      ]);
+    assert.equal(url.pathname, "/v1/models");
+    return Response.json({
+      data: customModelAliases.map((id) => ({
+        id,
+        metadata: { provider: { id: providerID } },
+      })),
+    });
+  });
+  async function discover(existing = {}) {
+    const hooks = await TailscaleAperturePlugin(
+      {
+        directory: "/tmp",
+        client: {
+          app: { log: async () => ({}) },
+          tui: { showToast: async () => ({}) },
+        },
+      },
+      {
+        baseUrl: "https://aperture.example",
+        apiKey: "test-key",
+        modelsDevUrl: "https://catalog.example",
+        disableModelsDev: false,
+      },
+    );
+    await hooks.config(existing);
+    return existing.provider[`aperture-${providerID}`].models;
+  }
+
+  for (const entries of [
+    Object.entries(catalog),
+    Object.entries(catalog).reverse(),
+  ]) {
+    catalog = Object.fromEntries(entries);
+    const models = await discover();
+    for (const id of customModelAliases) {
+      const model = models[id];
+      assert.equal(model.id, `self-host/${id}`);
+      assert.equal(model.reasoning, true, id);
+      assert.equal(model.cost, undefined, id);
+      assert.equal(model.status, undefined, id);
+      assert.deepEqual(model.modalities.input, ["text", "image"], id);
+      assert.deepEqual(
+        model.variants,
+        {
+          low: { reasoningEffort: "low" },
+          high: { reasoningEffort: "high" },
+          max: { reasoningEffort: "max" },
+        },
+        id,
+      );
+    }
+  }
+
+  const id = customModelAliases[0];
+  const overridden = await discover({
+    provider: {
+      "aperture-self-host": {
+        models: { [id]: { reasoning: false, cost: { input: 0, output: 0 } } },
+      },
+    },
+  });
+  assert.equal(overridden[id].reasoning, false);
+  assert.deepEqual(overridden[id].cost, { input: 0, output: 0 });
+
+  providerID = "host-a";
+  const hosted = await discover();
+  assert.equal(hosted[id].status, "beta");
+  assert.deepEqual(hosted[id].cost, { input: 10, output: 20 });
+  assert.deepEqual(hosted[id].variants, {
+    high: { reasoningEffort: "high" },
+    extreme: { reasoningEffort: "extreme" },
+  });
+
+  providerID = "self-host";
+  catalog = structuredClone(customProviderCatalog);
+  catalog.publisher.models = {
+    "model-v1": {
+      ...catalog.publisher.models.current,
+      id: "model-v1",
+      canonical_model_id: undefined,
+    },
+  };
+  const firstParty = await discover();
+  assert.equal(firstParty[id].reasoning, true);
+  assert.deepEqual(Object.keys(firstParty[id].variants), ["low", "high", "max"]);
+
+  catalog = structuredClone(customProviderCatalog);
+  catalog["host-b"].models["weights-org/model-v1"].canonical_model_id =
+    "other/model-v1";
+  const ambiguous = await discover();
+  assert.equal(ambiguous[id].reasoning, false);
+  assert.equal(ambiguous[id].variants, undefined);
+});
 
 test("merges model configurations from models.dev catalog", async () => {
   const originalFetch = globalThis.fetch;
