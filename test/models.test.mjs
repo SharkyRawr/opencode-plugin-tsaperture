@@ -117,7 +117,7 @@ test("custom providers resolve model names and canonical identities without inhe
   assert.equal(ambiguousFirstParty[id].variants, undefined);
 });
 
-test("merges model configurations from models.dev catalog", async () => {
+test("a unique cross-provider match supplies capabilities without host pricing or retirement", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = new URL(String(input));
@@ -133,6 +133,7 @@ test("merges model configurations from models.dev catalog", async () => {
               name: "Kimi K3",
               limit: { context: 128000, output: 8192 },
               cost: { input: 3.0, output: 15.0 },
+              status: "deprecated",
               temperature: true,
               tool_call: true,
               reasoning: false,
@@ -187,9 +188,8 @@ test("merges model configurations from models.dev catalog", async () => {
     assert.equal(providerModel.limit.output, 8192);
     assert.equal(providerModel.temperature, true);
     assert.equal(providerModel.tool_call, true);
-    // Aperture's pricing field is not consumed by the plugin; cost comes only
-    // from the Models.dev catalog and mergeModelConfig preserves it untouched.
-    assert.deepEqual(providerModel.cost, { input: 3.0, output: 15.0 });
+    assert.equal(providerModel.cost, undefined);
+    assert.equal(providerModel.status, undefined);
   } finally {
     globalThis.fetch = originalFetch;
   }

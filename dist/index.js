@@ -4,6 +4,22 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { platform } from "node:process";
 import { tool } from "@opencode-ai/plugin";
+// encodeURIComponent rejects route labels containing unpaired surrogates.
+const routeLabel = tool.schema.string().regex(/^\P{Surrogate}*$/u);
+// Preserve extra Aperture fields returned by the lookup tools.
+const apertureModel = tool.schema.looseObject({
+    id: tool.schema.string().regex(/\S/),
+    metadata: tool.schema
+        .looseObject({
+        provider: tool.schema
+            .looseObject({
+            id: routeLabel.nullish(),
+            name: routeLabel.nullish(),
+        })
+            .nullish(),
+    })
+        .nullish(),
+});
 const catalogNumber = tool.schema.number().finite().nonnegative();
 const catalogCost = tool.schema.object({
     input: catalogNumber,
@@ -145,7 +161,9 @@ function findModelsDevEntry(model, catalog, apertureProvider) {
             }
         }
     }
-    const uniqueMatch = exactMatches.length === 1 ? exactMatches[0] : undefined;
+    const uniqueMatch = exactMatches.length === 1
+        ? { ...exactMatches[0], inferred: true }
+        : undefined;
     const canonicalIDs = new Set(exactMatches.flatMap(({ model }) => model.canonical_model_id ? [model.canonical_model_id] : []));
     if (canonicalIDs.size !== 1)
         return uniqueMatch;
@@ -391,18 +409,13 @@ function mergeModelConfig(defaults, existing = {}) {
  * consecutive fetches return the same IDs) or the deadline is exceeded.
  * Transient fetch errors are retried within the deadline.
  */
-async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = STARTUP_POLL_INTERVAL_MS, deadlineMs = STARTUP_MODEL_STABILIZATION_DEADLINE_MS, fetchTimeoutMs = STARTUP_FETCH_TIMEOUT_MS, minFetchTimeoutMs = STARTUP_MIN_FETCH_TIMEOUT_MS, previousModels = [], previousProviders = new Map(), } = {}) {
+async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = STARTUP_POLL_INTERVAL_MS, deadlineMs = STARTUP_MODEL_STABILIZATION_DEADLINE_MS, fetchTimeoutMs = STARTUP_FETCH_TIMEOUT_MS, minFetchTimeoutMs = STARTUP_MIN_FETCH_TIMEOUT_MS, } = {}) {
     const deadline = Date.now() + deadlineMs;
-    let previousIds = previousModels.length > 0
-        ? previousModels
-            .map((model) => getModelProviderKey(model, previousProviders))
-            .sort()
-            .join("\n")
-        : undefined;
-    let lastGoodResult = previousModels;
-    let lastGoodProviders = previousProviders;
+    let previousIds;
+    let lastGoodResult = [];
+    let lastGoodProviders = new Map();
     let lastGoodProvidersDegraded = false;
-    let sawSuccessfulFetch = previousModels.length > 0;
+    let sawSuccessfulFetch = false;
     let lastError;
     while (Date.now() < deadline) {
         const remaining = deadline - Date.now();
@@ -414,22 +427,20 @@ async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = S
             };
         }
         try {
-            const providerResult = await fetchApertureProviders(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
-            const providers = providerResult.providers;
-            const models = await fetchApertureModels(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs), providers);
+            const { models, providers, providersDegraded } = await fetchDiscovery(baseUrl, apiKey, logger, Math.min(remaining, fetchTimeoutMs));
             const ids = models
                 .map((model) => getModelProviderKey(model, providers))
                 .sort()
                 .join("\n");
             lastGoodResult = models;
             lastGoodProviders = providers;
-            lastGoodProvidersDegraded = providerResult.degraded;
+            lastGoodProvidersDegraded = providersDegraded;
             sawSuccessfulFetch = true;
             if (ids === previousIds) {
                 return {
                     models,
                     providers,
-                    providersDegraded: providerResult.degraded,
+                    providersDegraded,
                 };
             }
             previousIds = ids;
@@ -456,7 +467,12 @@ async function waitForStableModels(baseUrl, apiKey, logger, { pollIntervalMs = S
         providersDegraded: lastGoodProvidersDegraded,
     };
 }
-async function fetchApertureProviders(baseUrl, apiKey, logger, timeoutMs = INTERACTIVE_FETCH_TIMEOUT_MS) {
+async function fetchDiscovery(baseUrl, apiKey, logger, timeoutMs) {
+    const { providers, degraded } = await fetchApertureProviders(baseUrl, apiKey, logger, timeoutMs);
+    const models = await fetchApertureModels(baseUrl, apiKey, logger, timeoutMs, providers);
+    return { models, providers, providersDegraded: degraded };
+}
+async function fetchApertureProviders(baseUrl, apiKey, logger, timeoutMs) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const url = `${baseUrl}/api/providers`;
@@ -487,7 +503,7 @@ async function fetchApertureProviders(baseUrl, apiKey, logger, timeoutMs = INTER
         clearTimeout(timer);
     }
 }
-async function fetchApertureModels(baseUrl, apiKey, logger, timeoutMs = INTERACTIVE_FETCH_TIMEOUT_MS, providers = new Map()) {
+async function fetchApertureModels(baseUrl, apiKey, logger, timeoutMs, providers) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const url = `${baseUrl}/v1/models`;
@@ -504,10 +520,21 @@ async function fetchApertureModels(baseUrl, apiKey, logger, timeoutMs = INTERACT
             logger.warn(`[TailscaleAperture] Aperture API request failed: GET /v1/models ${response.status} ${response.statusText}`);
             throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
         }
-        const data = (await response.json());
-        return Array.from(new Map((data.data ?? [])
-            .filter((model) => model.id)
-            .map((model) => [getModelProviderKey(model, providers), model])).values());
+        const data = (await response.json()).data ?? [];
+        if (!Array.isArray(data))
+            throw new Error("Invalid Aperture model list");
+        const models = new Map();
+        let skipped = 0;
+        for (const row of data) {
+            const model = apertureModel.safeParse(row);
+            if (model.success)
+                models.set(getModelProviderKey(model.data, providers), model.data);
+            else
+                skipped++;
+        }
+        if (skipped)
+            logger.warn(`[TailscaleAperture] Skipped ${skipped} invalid Aperture model entries`);
+        return Array.from(models.values());
     }
     catch (error) {
         if (!(error instanceof Error &&
@@ -770,22 +797,12 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
         if (!refresh && modelsLoaded) {
             return discoveredModels;
         }
-        if (refresh && modelsLoaded) {
-            // Interactive refresh: single fetch, no stabilization wait.
-            const providerResult = await fetchApertureProviders(baseUrl, apiKey, logger);
-            discoveredProviders = providerResult.providers;
-            providerMetadataDegraded = providerResult.degraded;
-            discoveredModels = await fetchApertureModels(baseUrl, apiKey, logger, INTERACTIVE_FETCH_TIMEOUT_MS, discoveredProviders);
-            warnProviderMetadataDegraded();
-            return discoveredModels;
-        }
-        if (!refresh && modelLoadPromise) {
+        if (modelLoadPromise)
             return modelLoadPromise;
-        }
-        modelLoadPromise = waitForStableModels(baseUrl, apiKey, logger, {
-            previousModels: discoveredModels,
-            previousProviders: discoveredProviders,
-        })
+        const discovery = modelsLoaded
+            ? fetchDiscovery(baseUrl, apiKey, logger, INTERACTIVE_FETCH_TIMEOUT_MS)
+            : waitForStableModels(baseUrl, apiKey, logger);
+        modelLoadPromise = discovery
             .then((result) => {
             discoveredModels = result.models;
             discoveredProviders = result.providers;
@@ -986,7 +1003,9 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
             get_aperture_model: tool({
                 description: "Get details for a specific Aperture model",
                 args: {
-                    modelId: tool.schema.string().describe("Model ID"),
+                    modelId: tool.schema
+                        .string()
+                        .describe("Provider-qualified route ID or unique model ID"),
                     refresh: tool.schema
                         .boolean()
                         .optional()
@@ -995,7 +1014,18 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
                 async execute(args) {
                     try {
                         const models = await loadModels(args.refresh ?? false);
-                        const model = models.find((m) => m.id === args.modelId);
+                        const routes = models.filter((model) => model.id !== args.modelId &&
+                            getApertureRouteModelID(model) === args.modelId);
+                        const matches = routes.length
+                            ? routes
+                            : models.filter((model) => model.id === args.modelId);
+                        if (matches.length > 1) {
+                            return JSON.stringify({
+                                error: `Model ${args.modelId} is ambiguous`,
+                                candidates: matches.map((model) => getApertureRouteModelID(model)),
+                            });
+                        }
+                        const [model] = matches;
                         if (!model) {
                             return JSON.stringify({
                                 error: `Model ${args.modelId} not found`,

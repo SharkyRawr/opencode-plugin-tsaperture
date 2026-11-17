@@ -69,6 +69,11 @@ test("filters out models without ids and dedupes duplicates", async () => {
   const config = await createConfig({
     "aperture.example/api/providers": providers,
     "aperture.example/v1/models": models([
+      null,
+      model(17),
+      model("  "),
+      { id: "bad-provider", metadata: { provider: { id: 42 } } },
+      { id: "bad-name", metadata: { provider: { name: [] } } },
       model("dupe"),
       model("dupe"),
       model(""),

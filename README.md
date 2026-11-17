@@ -169,4 +169,4 @@ Once configured, Aperture models appear in the model picker. On v1, the
 assistant can also call these plugin tools:
 
 - `list_aperture_models` - List available models from Aperture
-- `get_aperture_model` with `modelId` - Get model details
+- `get_aperture_model` with `modelId` - Get model details by provider-qualified route ID or unique model ID. Ambiguous IDs return the candidate routes.

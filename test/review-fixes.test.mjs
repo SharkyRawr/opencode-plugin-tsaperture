@@ -48,7 +48,18 @@ test("route IDs remain distinct through discovery, grouping, and display-name ch
     JSON.parse(await hooks.tool.list_aperture_models.execute({})).count,
     ids.length,
   );
+  const lookup = async (modelId) =>
+    JSON.parse(await hooks.tool.get_aperture_model.execute({ modelId }));
+  assert.deepEqual(
+    (await lookup("sample")).candidates,
+    ids.map((id) => `${id}/sample`),
+  );
+  assert.match((await lookup("missing")).error, /not found/);
   for (const [index, id] of ids.entries()) {
+    assert.deepEqual(
+      (await lookup(`${id}/sample`)).model,
+      makeModel({ id, name }),
+    );
     const provider = config.provider[`aperture-${encodeURIComponent(id)}`];
     assert.equal(provider.models.sample.id, `${id}/sample`);
     assert.equal(
@@ -164,4 +175,61 @@ test("catalog validation preserves good entries and falls back for invalid entri
     Object.keys(config.provider["aperture-catalog"].models).length,
     3,
   );
+});
+
+test("overlapping refreshes share a fetch and publish the provider and model list together", async (t) => {
+  let refreshing = false;
+  let providerRequests = 0;
+  let modelRequests = 0;
+  let fail = true;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (String(url).endsWith("/api/providers")) {
+      if (refreshing) providerRequests++;
+      return Response.json([
+        {
+          id: "route",
+          compatibility: refreshing
+            ? { openai_chat: true }
+            : { anthropic_messages: true },
+        },
+      ]);
+    }
+    if (refreshing) {
+      modelRequests++;
+      if (fail) return new Response(null, { status: 503 });
+    }
+    return Response.json({
+      data: [makeModel({ id: "route" }, refreshing ? "new" : "old")],
+    });
+  });
+  const hooks = await TailscaleAperturePlugin(input, {
+    ...options,
+    disableModelsDev: true,
+  });
+  const currentProvider = async () => {
+    const config = {};
+    await hooks.config(config);
+    return config.provider["aperture-route"];
+  };
+  const before = await currentProvider();
+  refreshing = true;
+  const list = hooks.tool.list_aperture_models;
+  const lookup = hooks.tool.get_aperture_model;
+  const failed = await Promise.all([
+    list.execute({ refresh: true }),
+    lookup.execute({ refresh: true, modelId: "old" }),
+  ]);
+  assert.ok(failed.every((value) => JSON.parse(value).error.includes("503")));
+  assert.deepEqual([providerRequests, modelRequests], [1, 1]);
+  assert.deepEqual(await currentProvider(), before);
+
+  fail = false;
+  assert.equal(
+    JSON.parse(await lookup.execute({ refresh: true, modelId: "new" })).model
+      .id,
+    "new",
+  );
+  const after = await currentProvider();
+  assert.equal(after.npm, "@ai-sdk/openai-compatible");
+  assert.deepEqual(Object.keys(after.models), ["new"]);
 });
