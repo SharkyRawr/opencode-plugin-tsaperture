@@ -60,7 +60,8 @@ take precedence over discovery defaults.
 Effort variants use each protocol's wire format; they are not generated for
 Bedrock or custom SDKs, which have no common effort parameter.
 
-The two model lookup tools remain v1-only and v2 diagnostics go to stderr.
+Both versions show an error toast in the terminal UI if startup model discovery fails.
+OpenCode v2 also writes diagnostics to stderr. The two model lookup tools are v1-only.
 OpenCode v2 supplies project, session, and client headers to model requests.
 V2's model schema also has no
 equivalent for v1's reasoning, attachment, or interleaved flags;

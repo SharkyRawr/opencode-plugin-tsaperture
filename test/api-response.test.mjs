@@ -164,7 +164,7 @@ test("surfaces a /v1/models HTTP error as a startup failure", async () => {
       },
       { baseUrl: "https://aperture.example" },
     );
-    // Let discovery reject before the config hook attaches its handler.
+    // Discovery finishes before the TUI becomes ready.
     await discovery;
     await new Promise((resolve) => setImmediate(resolve));
     const config = {};
@@ -175,11 +175,10 @@ test("surfaces a /v1/models HTTP error as a startup failure", async () => {
       undefined,
       "no provider config is emitted on failure",
     );
-    assert.equal(
-      toasts.length,
-      2,
-      "the queue continues draining after a rejected toast",
-    );
+    assert.equal(toasts.length, 0, "wait for the terminal to subscribe");
+    await plugin.event({ event: { type: "server.connected" } });
+    await plugin.config(config);
+    assert.equal(toasts.length, 1, "report the discovery failure once");
     assert.ok(
       logs.some(
         (entry) =>

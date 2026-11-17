@@ -12,6 +12,7 @@ import type {
   PluginOptions,
 } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
+import { discoveryStatus } from "./discovery-status.js";
 
 // encodeURIComponent rejects route labels containing unpaired surrogates.
 const routeLabel = tool.schema.string().regex(/^\P{Surrogate}*$/u);
@@ -1044,6 +1045,7 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
 
   const pendingToasts: Array<{ variant: ToastVariant; message: string }> = [];
   let tuiReady = false;
+  let readinessTimer: NodeJS.Timeout | undefined;
 
   async function flushToasts(): Promise<void> {
     if (!tuiReady) {
@@ -1086,7 +1088,14 @@ export const TailscaleAperturePlugin: Plugin = async (input, options) => {
     void flushToasts();
   }
 
-  function markTuiReady(): void {
+  function markTuiReady(connected: boolean): void {
+    if (tuiReady) return;
+    // Embedded v1 terminals can subscribe after config and omit server.connected.
+    if (!connected) {
+      readinessTimer ??= setTimeout(() => markTuiReady(true), 3_000).unref();
+      return;
+    }
+    clearTimeout(readinessTimer);
     tuiReady = true;
     void flushToasts();
   }
@@ -1098,7 +1107,7 @@ async function createApertureHooks(
   options: PluginOptions | undefined,
   logger: Logger,
   showMessage: (variant: ToastVariant, message: string) => void = () => {},
-  markTuiReady: () => void = () => {},
+  markTuiReady: (connected: boolean) => void = () => {},
 ): Promise<Hooks> {
   const fileConfig = await loadApertureConfig(logger);
   const rawBaseUrl =
@@ -1130,11 +1139,11 @@ async function createApertureHooks(
     showMessage("error", message);
     return {
       config: async () => {
-        markTuiReady();
+        markTuiReady(false);
       },
       event: async ({ event }) => {
         if (event.type === "server.connected") {
-          markTuiReady();
+          markTuiReady(true);
         }
       },
     };
@@ -1325,7 +1334,7 @@ async function createApertureHooks(
     ).size;
   }
 
-  async function loadModelsOnStartup(): Promise<ApertureModel[]> {
+  async function loadModelsOnStartup(): Promise<ApertureModel[] | undefined> {
     try {
       discoveredModels = await loadModels(false);
       if (discoveredModels.length === 0) {
@@ -1350,7 +1359,7 @@ async function createApertureHooks(
       const errmsg = formatError(error);
       logger.error("[TailscaleAperture] Failed to register models:", error);
       showMessage("error", errmsg);
-      throw error;
+      return undefined;
     }
   }
 
@@ -1369,10 +1378,6 @@ async function createApertureHooks(
       );
     }
   })();
-
-  // Discovery may reject before the config hook starts awaiting it.
-  // Keep the original promise so the hook still receives the failure.
-  void startupModels.catch(() => {});
 
   const startupModelsDevCatalog = (async () => {
     const startedAt = Date.now();
@@ -1397,7 +1402,11 @@ async function createApertureHooks(
     config: async (config: Config) => {
       const configWaitStartedAt = Date.now();
       try {
-        await Promise.all([startupModels, startupModelsDevCatalog]);
+        const [models] = await Promise.all([
+          startupModels,
+          startupModelsDevCatalog,
+        ]);
+        if (!models) return;
         const configWaitDurationMs = Date.now() - configWaitStartedAt;
         const startupDurationMs = Date.now() - startupStartedAt;
         logger.info(
@@ -1408,13 +1417,13 @@ async function createApertureHooks(
         logger.error("[TailscaleAperture] Failed to register models:", error);
         showMessage("error", formatError(error));
       } finally {
-        markTuiReady();
+        markTuiReady(false);
       }
     },
 
     event: async ({ event }) => {
       if (event.type === "server.connected") {
-        markTuiReady();
+        markTuiReady(true);
       }
     },
 
@@ -1503,19 +1512,31 @@ async function createApertureHooks(
 }
 
 export default {
-  id: "opencode-plugin-tsaperture",
+  id: discoveryStatus.id,
   server: TailscaleAperturePlugin,
   async setup(context) {
-    // Keep v2 diagnostics independent of the v1 SDK client and toast hooks.
     const logger: Logger = {
       info: (message, ...args) => console.error(message, ...args),
       warn: (message, ...args) => console.error(message, ...args),
       error: (message, ...args) => console.error(message, ...args),
       debug: () => {},
     };
-    const hooks = await createApertureHooks(context.options, logger);
+    let startupError: string | null = null;
     const config: Config = {};
-    await hooks.config?.(config);
+    const configured = createApertureHooks(
+      context.options,
+      logger,
+      (variant, message) => {
+        if (variant === "error") startupError = message;
+      },
+    ).then((hooks) => hooks.config?.(config));
+    const status = await context.rpc.register(discoveryStatus, {
+      startupError: async () => {
+        await configured;
+        return startupError;
+      },
+    });
+    await configured;
     await context.provider.transform((providers) => {
       for (const [providerID, provider] of Object.entries(
         config.provider ?? {},
@@ -1564,6 +1585,7 @@ export default {
     });
     // Async discovery can finish after the host's initial provider batch has flushed.
     await context.provider.reload();
+    return () => status.dispose();
   },
 } satisfies PluginModule & PluginV2.Plugin;
 

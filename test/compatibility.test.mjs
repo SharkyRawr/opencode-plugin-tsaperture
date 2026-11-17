@@ -79,6 +79,7 @@ test("v2 publishes reasoning effort variants for custom-provider model identitie
   });
   let transform;
   await plugin.setup({
+    rpc: { register: async () => ({ dispose: async () => {} }) },
     options: {
       baseUrl: "https://aperture.example",
       apiKey: "test-key",
@@ -208,6 +209,7 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
   let transform;
   let reloaded = false;
   await plugin.setup({
+    rpc: { register: async () => ({ dispose: async () => {} }) },
     options,
     provider: {
       transform: async (callback) => {
@@ -419,5 +421,69 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
         },
       ],
     );
+  }
+});
+
+test("the v2 terminal reads the startup result, including when it attaches after discovery", async (t) => {
+  const { default: terminal } = await import("opencode-plugin-tsaperture/tui");
+  t.mock.method(console, "error", () => {});
+  let failing = true;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (String(url).endsWith("/api/providers")) return Response.json([]);
+    return failing
+      ? new Response(null, { status: 503 })
+      : Response.json({ data: [] });
+  });
+  for (const shouldFail of [true, false]) {
+    failing = shouldFail;
+    const toasts = [];
+    let registration;
+    const registered = new Promise((resolve) => {
+      registration = resolve;
+    });
+    let disposed = false;
+    const server = plugin.setup({
+      options: { baseUrl: "https://aperture.example", disableModelsDev: true },
+      rpc: {
+        register: async (definition, handlers) => {
+          registration({ definition, handlers });
+          return {
+            dispose: async () => {
+              disposed = true;
+            },
+          };
+        },
+      },
+      provider: { transform: async () => {}, reload: async () => {} },
+    });
+    const { definition, handlers } = await registered;
+    const location = { directory: "/tmp" };
+    const context = {
+      location,
+      client: {
+        rpc(contract) {
+          assert.deepEqual(contract, definition);
+          return {
+            startupError: (input, options) => {
+              assert.equal(input, null);
+              assert.deepEqual(options, { location });
+              return handlers.startupError();
+            },
+          };
+        },
+      },
+      ui: { toast: { show: (toast) => toasts.push(toast) } },
+    };
+    await terminal.setup(context);
+    const cleanup = await server;
+    assert.equal(toasts.length, shouldFail ? 1 : 0);
+    if (shouldFail) {
+      assert.equal(toasts[0].variant, "error");
+      assert.match(toasts[0].message, /Failed to fetch models: 503/);
+      await terminal.setup(context);
+      assert.deepEqual(toasts[1], toasts[0]);
+    }
+    await cleanup();
+    assert.equal(disposed, true);
   }
 });

@@ -1,0 +1,1 @@
+{"version":3,"file":"discovery-status.d.ts","sourceRoot":"","sources":["../src/discovery-status.ts"],"names":[],"mappings":"AAAA,eAAO,MAAM,eAAe;aAC1B,EAAE,EAAE,4BAA4B;aAChC,OAAO;iBACL,YAAY;qBACV,KAAK;yBAAI,IAAI,EAAE,MAAM;;qBACrB,MAAM;yBAAI,KAAK;6BAAK,IAAI,EAAE,QAAQ;;6BAAM,IAAI,EAAE,MAAM;;;;;aAGxD,MAAM;CACE,CAAC"}

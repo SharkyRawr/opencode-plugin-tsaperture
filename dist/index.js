@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { platform } from "node:process";
 import { tool } from "@opencode-ai/plugin";
+import { discoveryStatus } from "./discovery-status.js";
 // encodeURIComponent rejects route labels containing unpaired surrogates.
 const routeLabel = tool.schema.string().regex(/^\P{Surrogate}*$/u);
 // Preserve extra Aperture fields returned by the lookup tools.
@@ -692,6 +693,7 @@ export const TailscaleAperturePlugin = async (input, options) => {
     logger.info(`[TailscaleAperture] ${pkg.name} v${pkg.version}`);
     const pendingToasts = [];
     let tuiReady = false;
+    let readinessTimer;
     async function flushToasts() {
         if (!tuiReady) {
             return;
@@ -726,7 +728,15 @@ export const TailscaleAperturePlugin = async (input, options) => {
         pendingToasts.push({ variant, message });
         void flushToasts();
     }
-    function markTuiReady() {
+    function markTuiReady(connected) {
+        if (tuiReady)
+            return;
+        // Embedded v1 terminals can subscribe after config and omit server.connected.
+        if (!connected) {
+            readinessTimer ??= setTimeout(() => markTuiReady(true), 3_000).unref();
+            return;
+        }
+        clearTimeout(readinessTimer);
         tuiReady = true;
         void flushToasts();
     }
@@ -756,11 +766,11 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
         showMessage("error", message);
         return {
             config: async () => {
-                markTuiReady();
+                markTuiReady(false);
             },
             event: async ({ event }) => {
                 if (event.type === "server.connected") {
-                    markTuiReady();
+                    markTuiReady(true);
                 }
             },
         };
@@ -914,7 +924,7 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
             const errmsg = formatError(error);
             logger.error("[TailscaleAperture] Failed to register models:", error);
             showMessage("error", errmsg);
-            throw error;
+            return undefined;
         }
     }
     const startupStartedAt = Date.now();
@@ -930,9 +940,6 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
             logger.info(`[TailscaleAperture] Startup step Aperture model discovery finished in ${formatDuration(startupModelsDurationMs)}`);
         }
     })();
-    // Discovery may reject before the config hook starts awaiting it.
-    // Keep the original promise so the hook still receives the failure.
-    void startupModels.catch(() => { });
     const startupModelsDevCatalog = (async () => {
         const startedAt = Date.now();
         try {
@@ -952,7 +959,12 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
         config: async (config) => {
             const configWaitStartedAt = Date.now();
             try {
-                await Promise.all([startupModels, startupModelsDevCatalog]);
+                const [models] = await Promise.all([
+                    startupModels,
+                    startupModelsDevCatalog,
+                ]);
+                if (!models)
+                    return;
                 const configWaitDurationMs = Date.now() - configWaitStartedAt;
                 const startupDurationMs = Date.now() - startupStartedAt;
                 logger.info(`[TailscaleAperture] Startup finished in ${formatDuration(startupDurationMs)} (Aperture models: ${formatDuration(startupModelsDurationMs)}, Models.dev catalog: ${formatDuration(startupModelsDevDurationMs)}, config wait: ${formatDuration(configWaitDurationMs)})`);
@@ -963,12 +975,12 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
                 showMessage("error", formatError(error));
             }
             finally {
-                markTuiReady();
+                markTuiReady(false);
             }
         },
         event: async ({ event }) => {
             if (event.type === "server.connected") {
-                markTuiReady();
+                markTuiReady(true);
             }
         },
         "chat.headers": async ({ sessionID, model, message }, output) => {
@@ -1042,19 +1054,28 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
     };
 }
 export default {
-    id: "opencode-plugin-tsaperture",
+    id: discoveryStatus.id,
     server: TailscaleAperturePlugin,
     async setup(context) {
-        // Keep v2 diagnostics independent of the v1 SDK client and toast hooks.
         const logger = {
             info: (message, ...args) => console.error(message, ...args),
             warn: (message, ...args) => console.error(message, ...args),
             error: (message, ...args) => console.error(message, ...args),
             debug: () => { },
         };
-        const hooks = await createApertureHooks(context.options, logger);
+        let startupError = null;
         const config = {};
-        await hooks.config?.(config);
+        const configured = createApertureHooks(context.options, logger, (variant, message) => {
+            if (variant === "error")
+                startupError = message;
+        }).then((hooks) => hooks.config?.(config));
+        const status = await context.rpc.register(discoveryStatus, {
+            startupError: async () => {
+                await configured;
+                return startupError;
+            },
+        });
+        await configured;
         await context.provider.transform((providers) => {
             for (const [providerID, provider] of Object.entries(config.provider ?? {})) {
                 const existingProvider = providers.get(providerID);
@@ -1095,6 +1116,7 @@ export default {
         });
         // Async discovery can finish after the host's initial provider batch has flushed.
         await context.provider.reload();
+        return () => status.dispose();
     },
 };
 function applyV2Model(model, modelID, config, npm, isNew) {
