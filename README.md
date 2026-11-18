@@ -4,6 +4,12 @@
 
 Automatically populate models from Tailscale Aperture.
 
+## v0.5.5 release notes
+
+- Startup model discovery failures now appear as error toasts in both OpenCode terminals.
+- Model refreshes publish provider metadata and models together, skip malformed entries, and resolve ambiguous lookups by route.
+- Inferred pricing and retirement status stay local to their provider.
+
 ## v0.5.4 release notes
 
 - Updated dependencies, including `@opencode-ai/plugin` 1.19.5 and `@opencode/plugin` 2.2.6, and refreshed the Biome schema.
