@@ -121,7 +121,7 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
     ["vertex", { google_generate_content: true }],
     ["vertex-raw", { google_raw_predict: true }],
     ["bedrock", { bedrock_converse: true }],
-    ["gemini", { gemini_generate_content: true }],
+    ["opencode-go-x-google", { gemini_generate_content: true }],
     ["opencode-go-x-responses", { openai_responses: true }],
   ];
   const metadata = {
@@ -291,6 +291,11 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
     if (id === "bedrock") assert.equal(provider.settings.region, "us-east-1");
     const model = models.get("model");
     assert.equal(model.modelID, expected.models.model.id, id);
+    if (id === "opencode-go-x-google") {
+      assert.equal(expected.npm, "@ai-sdk/google");
+      assert.equal(provider.settings.baseURL, "https://aperture.example/v1beta");
+      assert.equal(model.modelID, "models/opencode-go-x-google/model");
+    }
     assert.deepEqual(model.limit, expected.models.model.limit, id);
     assert.deepEqual(model.capabilities, {
       tools: true,
@@ -317,7 +322,7 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
       vertex: {
         generationConfig: { thinkingConfig: { thinkingLevel: "low" } },
       },
-      gemini: {
+      "opencode-go-x-google": {
         generationConfig: { thinkingConfig: { thinkingLevel: "low" } },
       },
       "opencode-go-x-responses": { reasoning: { effort: "low" } },

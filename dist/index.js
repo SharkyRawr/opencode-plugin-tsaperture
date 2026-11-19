@@ -886,7 +886,11 @@ async function createApertureHooks(options, logger, showMessage = () => { }, mar
                 }
                 modelsObj[model.id] = {
                     ...mergeModelConfig(modelDefaults.defaults, existingModel),
-                    id: existingModel.id ?? routeModelID,
+                    // The Google SDK treats any ID containing a slash as a full resource path.
+                    id: existingModel.id ??
+                        (group.protocol === "gemini_generate_content"
+                            ? `models/${routeModelID}`
+                            : routeModelID),
                     name: existingModel.name ?? model.id,
                 };
             }
