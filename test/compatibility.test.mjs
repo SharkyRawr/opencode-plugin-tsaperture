@@ -294,7 +294,7 @@ test("one package supports v1 server hooks and v2 provider transforms", async (t
     if (id === "opencode-go-x-google") {
       assert.equal(expected.npm, "@ai-sdk/google");
       assert.equal(provider.settings.baseURL, "https://aperture.example/v1beta");
-      assert.equal(model.modelID, "models/opencode-go-x-google/model");
+      assert.equal(model.modelID, "model");
     }
     assert.deepEqual(model.limit, expected.models.model.limit, id);
     assert.deepEqual(model.capabilities, {
